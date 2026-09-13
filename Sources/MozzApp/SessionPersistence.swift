@@ -142,6 +142,20 @@ enum SessionPersistence {
         return next
     }
 
+    /// Replace the whole list, keeping its first entry as the active session.
+    ///
+    /// For the one caller that has a complete, already-ordered answer — folding
+    /// in what the circle knows — rather than a series of single-session saves,
+    /// each of which would promote its subject to the front.
+    static func replaceAll(_ sessions: [StoredSession], in store: any CredentialStore) {
+        guard let active = sessions.first else {
+            clear(store)
+            return
+        }
+        writeActive(active, to: store)
+        writeList(sessions, to: store)
+    }
+
     // MARK: Writing
 
     private static func writeActive(_ session: StoredSession, to store: any CredentialStore) {

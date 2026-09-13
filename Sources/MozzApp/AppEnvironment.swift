@@ -1528,7 +1528,7 @@ public final class AppEnvironment: ObservableObject {
     /// weekly cadence, cheap to call whenever Home appears.
     public func ensureMozzWeekly() async {
         guard let serverId = active?.connection.id else { return }
-        let existing = try? await recommendations.mozzWeeklySet()
+        let existing = try? await recommendations.mozzWeeklySet(serverId: serverId)
         let ageDays = existing.map { (Date().timeIntervalSince1970 - $0.generatedAt) / 86_400 }
         if existing == nil || (ageDays ?? .greatestFiniteMagnitude) >= 7 {
             _ = try? await recommendations.generateMozzWeekly(serverId: serverId)
@@ -1616,9 +1616,11 @@ public final class AppEnvironment: ObservableObject {
         }
     }
 
-    /// The Home mix tiles (daily batch + Mozz Weekly), ordered for display.
+    /// The Home mix tiles (daily batch + Mozz Weekly) for the active server,
+    /// ordered for display.
     public func homeMixes() async -> [RecommendationService.HomeMix] {
-        (try? await recommendations.homeMixes()) ?? []
+        guard let serverId = active?.connection.id else { return [] }
+        return (try? await recommendations.homeMixes(serverId: serverId)) ?? []
     }
 
     // MARK: Likes & ratings
@@ -2441,6 +2443,65 @@ public final class AppEnvironment: ObservableObject {
         ServerSyncJournal.merge(
             RelayHistoryStore.mergedServerRecords(snapshots),
             into: credentials)
+        adoptServersFromCircle()
+    }
+
+    /// Fold servers the circle knows about into the list this device can browse.
+    ///
+    /// The journal has always carried them — it is how a fresh device comes up
+    /// already signed in — but nothing wrote them into the session store, so
+    /// they existed and were unreachable. That was invisible while the phone
+    /// held one session and the only use for a learned server was bootstrapping
+    /// a device that had none; with a Servers screen it is the difference
+    /// between "your other machine's Navidrome is here" and it simply missing.
+    /// Android and the desktop have both folded them into their accounts list
+    /// all along.
+    ///
+    /// The active server is never changed by this. Learning that another device
+    /// has a server is not a request to go and look at it, and moving someone's
+    /// library out from under them because a laptop synced would be a worse bug
+    /// than the one this fixes. Newly-learned servers land behind the current
+    /// one; a server signed out of elsewhere is dropped, unless it is the one
+    /// being browsed — leaving is a decision this device gets to make for
+    /// itself, the same way the desktop keeps its own head through an import.
+    private func adoptServersFromCircle() {
+        let known = SessionPersistence.all(credentials)
+        guard let active = known.first else { return }
+
+        var byIdentity: [String: StoredSession] = [:]
+        var order: [String] = []
+        for session in known {
+            byIdentity[session.identity] = session
+            order.append(session.identity)
+        }
+
+        for record in ServerSyncJournal.records(in: credentials) {
+            guard let learned = Self.storedSession(
+                from: record,
+                clientIdentifier: clientIdentifier) else {
+                // A tombstone: drop it, unless it is the one on screen.
+                let gone = known.first { $0.serverId == record.id }
+                if let gone, gone.identity != active.identity {
+                    byIdentity[gone.identity] = nil
+                    order.removeAll { $0 == gone.identity }
+                }
+                continue
+            }
+            // Freeze the id the circle knows it by, so this device and the one
+            // it was learned from agree about which catalogue it is.
+            var session = learned
+            session.serverId = record.id
+            if byIdentity[session.identity] == nil { order.append(session.identity) }
+            // Never overwrite the active session from a remote record: its token
+            // is this device's working one and the remote may be staler.
+            if session.identity == active.identity { continue }
+            byIdentity[session.identity] = session
+        }
+
+        let merged = order.compactMap { byIdentity[$0] }
+        guard merged.map(\.identity) != known.map(\.identity) else { return }
+        SessionPersistence.replaceAll(merged, in: credentials)
+        refreshServers()
     }
 
     private func syncRelayStateIfDue(
