@@ -358,6 +358,21 @@ public sealed class MozzServer(MozzCore core, ISecretStore secrets, string? acco
     /// is in the platform keystore, and this file holds only what is needed to
     /// look it up and to label the account in the UI.
     /// </summary>
+    /// <summary>
+    /// Make an already-saved account the active one, so the choice survives a
+    /// restart. No network and no token exchange: this is only the ordering.
+    /// </summary>
+    public void MakeActive(string serverId)
+    {
+        var accounts = SavedAccounts().ToList();
+        var index = accounts.FindIndex(a => a.ServerId == serverId);
+        if (index <= 0) return;   // absent, or already first
+        var chosen = accounts[index];
+        accounts.RemoveAt(index);
+        accounts.Insert(0, chosen);
+        WriteAccounts(accounts);
+    }
+
     public IReadOnlyList<ServerAccount> SavedAccounts()
     {
         var path = _accountsPath;
@@ -436,14 +451,27 @@ public sealed class MozzServer(MozzCore core, ISecretStore secrets, string? acco
         return account;
     }
 
-    /// <summary>Insert or replace one account, leaving the others alone.</summary>
+    /// <summary>
+    /// Insert or replace one account, leaving the others alone, and make it the
+    /// active one.
+    /// </summary>
+    /// <remarks>
+    /// First is active — <see cref="Mozz.Desktop.ViewModels.MainViewModel.ActiveAccount"/>
+    /// is the head of the list, and the phones use the same convention in their
+    /// own stores.
+    ///
+    /// It used to append. The in-memory list was reordered when you pressed Use
+    /// and the file was not, so the choice lasted until the next launch and a
+    /// freshly signed-in server was not the one being browsed — it went to the
+    /// back and the app carried on showing the old one.
+    /// </remarks>
     internal void SaveAccount(ServerAccount account)
     {
         account = NormalizeSavedAccount(account);
         var accounts = SavedAccounts()
             .Where(a => a.ServerId != account.ServerId && CanonicalServerId(a) != account.ServerId)
             .ToList();
-        accounts.Add(account);
+        accounts.Insert(0, account);
         WriteAccounts(accounts);
         if (SecretFor(account) is { } token)
         {

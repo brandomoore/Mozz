@@ -76,6 +76,10 @@ public sealed partial class BackendOption : ObservableObject
     /// <summary>Whether this is the backend currently being signed in to.</summary>
     [ObservableProperty] private bool _isSelected;
 
+    /// <summary>The mark and colour for one backend, for anywhere a saved server
+    /// is listed rather than chosen.</summary>
+    public static BackendOption For(BackendKind kind) => All().First(o => o.Kind == kind);
+
     /// <summary>The three Mozz can talk to, in the order iOS lists them.</summary>
     public static IReadOnlyList<BackendOption> All() =>
     [
@@ -86,4 +90,36 @@ public sealed partial class BackendOption : ObservableObject
         // label carries the accuracy the logo cannot.
         new(BackendKind.Subsonic, "Navidrome (Subsonic)", "IconBrandNavidrome", Color.FromRgb(0x2E, 0x86, 0xD6)),
     ];
+}
+
+/// <summary>
+/// One saved server in the Servers list: which backend it is, where it is, and
+/// whether it is the one being browsed.
+///
+/// <see cref="ServerAccount"/> is the record the core hands back and is bound
+/// straight to XAML elsewhere; this wraps it with the two things only the list
+/// knows — the brand mark and which row has the tick. Both phones show the
+/// same two, so this is what keeps the three screens the same screen.
+/// </summary>
+public sealed record ServerRow(ServerAccount Account, bool IsActive)
+{
+    public string ServerName => Account.ServerName;
+
+    /// <summary>
+    /// The address without its scheme. The chip already says which product this
+    /// is, and with two Jellyfins on one account the address is the only thing
+    /// telling them apart — so it earns the line, and "https://" does not.
+    /// </summary>
+    public string Address
+    {
+        get
+        {
+            var url = Account.BaseUrl ?? string.Empty;
+            var scheme = url.IndexOf("://", StringComparison.Ordinal);
+            return (scheme >= 0 ? url[(scheme + 3)..] : url).TrimEnd('/');
+        }
+    }
+
+    public BackendOption Brand => _brand ??= BackendOption.For(Account.Kind);
+    private BackendOption? _brand;
 }

@@ -1123,6 +1123,10 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
         if (account is null) return;
         var index = Connect.Accounts.IndexOf(account);
         if (index > 0) Connect.Accounts.Move(index, 0);
+        // And on disk, or the choice lasts until the next launch: the list is
+        // rebuilt from the accounts file every time the app opens.
+        _server.MakeActive(account.ServerId);
+        Connect.RebuildServerRows();
 
         try
         {
@@ -1130,10 +1134,28 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
             await _server.AttachAsync(account);
             _artwork.ForgetFailures();
             _lastWrittenContinuityQueueHash = null;
+
+            // Everything built from the old server's catalogue goes, before
+            // anything is built from the new one's.
+            //
+            // Switching used to change the account and leave the library: Home
+            // still showed the previous server's mixes, drawn from artwork keys
+            // that server owned — so the covers were requested from the NEW
+            // server, which has never heard of them, and came back as letter
+            // placeholders. It looked like the new server had no artwork.
+            // Invisible while there was only ever one server to be on.
+            _homeMixTiles = [];
+            HomeMixGrid.Reset(_homeMixTiles);
+            _mixTones.Clear();
+            RebuildHomeRows();
+
             await RefreshActiveAccountProfileAsync();
             await ReconcileContinuityAsync();
             await RefreshCountsAsync();
             await RefreshSettingsAsync();
+            // And reload whatever page is open against the server now in use,
+            // rather than leaving the last one's rows on screen.
+            await LoadSectionAsync(Section, clearBackStack: true);
         }
         catch (Exception ex)
         {

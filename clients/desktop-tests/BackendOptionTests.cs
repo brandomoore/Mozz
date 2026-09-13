@@ -49,3 +49,50 @@ public sealed class BackendOptionTests
         Assert.Equal(options.Count, options.Select(o => o.Tint.ToString()!).Distinct().Count());
     }
 }
+
+public sealed class ServerRowTests
+{
+    private static ServerAccount Account(string name, string url, BackendKind kind = BackendKind.Jellyfin) =>
+        new()
+        {
+            ServerId = name,
+            Kind = kind,
+            BaseUrl = url,
+            ServerName = name,
+            ClientIdentifier = "client",
+        };
+
+    /// <summary>
+    /// The address earns its line; the scheme does not.
+    ///
+    /// The chip already says which product a row is, so with two Jellyfins on
+    /// one account the address is the only thing telling them apart — and
+    /// "https://" is the same on both.
+    /// </summary>
+    [Fact]
+    public void AServerIsToldApartByItsAddress()
+    {
+        Assert.Equal(
+            "192.168.1.10:8096",
+            new ServerRow(Account("Jelly", "http://192.168.1.10:8096/"), false).Address);
+        Assert.Equal(
+            "music.example.com",
+            new ServerRow(Account("Navi", "https://music.example.com"), false).Address);
+        // A stored address with no scheme at all still reads as one.
+        Assert.Equal(
+            "nas.local:4533",
+            new ServerRow(Account("Navi", "nas.local:4533"), false).Address);
+    }
+
+    /// <summary>Each row wears its own backend's mark, not one generic server glyph.</summary>
+    [Fact]
+    public void AServerWearsItsOwnBackendsMark()
+    {
+        Assert.Equal(
+            "IconBrandPlex",
+            new ServerRow(Account("Home", "https://plex.test", BackendKind.Plex), true).Brand.IconKey);
+        Assert.Equal(
+            "IconBrandNavidrome",
+            new ServerRow(Account("VPS", "https://navi.test", BackendKind.Subsonic), false).Brand.IconKey);
+    }
+}

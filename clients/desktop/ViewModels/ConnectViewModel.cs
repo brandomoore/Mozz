@@ -25,7 +25,11 @@ public sealed partial class ConnectViewModel : ViewModelBase
         _server = server;
         _onLibraryChanged = onLibraryChanged;
         Accounts = new(server.SavedAccounts());
-        Accounts.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasAccounts));
+        Accounts.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(HasAccounts));
+            RebuildServerRows();
+        };
         PlexHomeUsers.CollectionChanged += (_, _) =>
             OnPropertyChanged(nameof(HasPlexHomeUsers));
         // The starting Kind is assigned as a field initializer, which fires no
@@ -88,6 +92,23 @@ public sealed partial class ConnectViewModel : ViewModelBase
     public string UrlPlaceholder => Kind == BackendKind.Jellyfin
         ? "192.168.1.10:8096"
         : "music.example.com";
+
+    /// <summary>
+    /// The saved servers as the list draws them — brand mark, address, and which
+    /// one has the tick.
+    /// </summary>
+    /// <remarks>
+    /// Rebuilt rather than bound through converters because "which one is
+    /// active" is the head of the list, and a row cannot see its own index.
+    /// </remarks>
+    public System.Collections.ObjectModel.ObservableCollection<ServerRow> ServerRows { get; } = [];
+
+    public void RebuildServerRows()
+    {
+        ServerRows.Clear();
+        for (var i = 0; i < Accounts.Count; i++)
+            ServerRows.Add(new ServerRow(Accounts[i], IsActive: i == 0));
+    }
 
     /// <summary>The three backends, for the picker. See <see cref="BackendOption"/>.</summary>
     public IReadOnlyList<BackendOption> Backends { get; } = BackendOption.All();
@@ -342,6 +363,7 @@ public sealed partial class ConnectViewModel : ViewModelBase
         Accounts.Clear();
         foreach (var saved in _server.SavedAccounts()) Accounts.Add(saved);
         OnPropertyChanged(nameof(HasAccounts));
+        RebuildServerRows();
     }
 
     // MARK: Sync
