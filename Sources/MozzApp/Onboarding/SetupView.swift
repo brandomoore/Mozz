@@ -63,7 +63,7 @@ struct SetupView: View {
     }
 
     @ViewBuilder private var progress: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 14) {
             if let p = env.syncProgress {
                 if let total = p.totalCount, total > 0 {
                     ProgressView(value: Double(min(p.itemsSynced, total)), total: Double(total))
@@ -71,9 +71,22 @@ struct SetupView: View {
                 } else {
                     ProgressView().controlSize(.large)
                 }
-                Text(phaseLabel(p))
-                    .font(.footnote).foregroundStyle(.secondary)
-                    .contentTransition(.numericText())
+                // The checklist, not just the running phase.
+                //
+                // This screen showed one bar and one line — "Songs — 3,712 of
+                // 20,004" — which is the same picture for "nearly done" as for
+                // "stuck on the first phase", and it is the screen a new user
+                // spends the longest looking at. The core has always sent the
+                // per-phase breakdown; the running library card has always drawn
+                // it; this was the one place that threw it away.
+                if !p.details.isEmpty {
+                    SyncPhaseChecklist(details: p.details)
+                        .frame(maxWidth: 260, alignment: .leading)
+                } else {
+                    Text(phaseLabel(p))
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .contentTransition(.numericText())
+                }
             } else {
                 ProgressView().controlSize(.large)
                 Text(env.syncStatusText ?? "Connecting…")

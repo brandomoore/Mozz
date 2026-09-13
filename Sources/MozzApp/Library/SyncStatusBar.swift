@@ -14,10 +14,6 @@ import MozzSync
 /// view that's already mounted.
 struct SyncStatusBar: View {
     @EnvironmentObject private var env: AppEnvironment
-    /// Status glyphs are sized in scaled points so they keep their proportion to
-    /// the label beside them instead of shrivelling as the text grows.
-    @ScaledMetric(relativeTo: .caption) private var glyph: CGFloat = 11
-
     /// Walks the counters up to each new page instead of letting them jump, so a
     /// slow sync still looks like it's moving. See `SyncProgressSmoother`.
     @StateObject private var smoother = SyncProgressSmoother()
@@ -31,7 +27,7 @@ struct SyncStatusBar: View {
         VStack(alignment: .leading, spacing: 9) {
             header
             if let details = env.syncProgress?.details, !details.isEmpty {
-                breakdown(details)
+                SyncPhaseChecklist(details: details, counts: smoother.counts)
             }
         }
         .padding(.horizontal, 14)
@@ -44,9 +40,9 @@ struct SyncStatusBar: View {
         // up with the grid and shelves below it.
         .padding(.horizontal, 20)
         .transition(.opacity.combined(with: .move(edge: .top)))
-        // `.contain`, not `.combine`: the phase rows carry their own spoken state
-        // ("Albums, done"), and combining would flatten the whole checklist into
-        // one summary — losing exactly the detail this card exists to give.
+        // `.contain`, not `.combine`: the checklist's rows carry their own spoken
+        // state ("Albums, done"), and combining would flatten them into one
+        // summary — losing exactly the detail this card exists to give.
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("Library sync"))
         .accessibilityValue(Text(env.syncStatusText ?? "Syncing your library"))
@@ -143,22 +139,50 @@ struct SyncStatusBar: View {
             return "\(Int((fraction * 100).rounded()))%"
         }
         if let n = env.syncProgress?.itemsSynced, n > 0 {
-            return "\(Self.compact(n)) items"
+            return "\(SyncPhaseChecklist.compact(n)) items"
         }
         return ""
     }
 
-    // MARK: Per-phase breakdown
+}
 
-    /// The phases as a vertical checklist, one per line.
-    ///
-    /// This used to be a single horizontal row. It fitted at the default text
-    /// size and fell apart above it: four labels and their counts competing for
-    /// one line meant everything truncated to "Albu… 1k/6…", which is worse than
-    /// useless — and it was worst at exactly the sizes chosen by people who need
-    /// the text bigger. Stacked, each phase gets a full line at any size, and the
-    /// list doubles as a progress checklist: what's done, what's happening, and
-    /// what's still to come.
+/// The sync's own account of itself: artists, then albums, then songs, then
+/// playlists, each with a state and a count.
+///
+/// Lifted out of `SyncStatusBar` so the first-run setup screen can draw the same
+/// checklist. It used to show one bar and one line — "Songs — 3,712 of 20,004" —
+/// which is the same picture for "nearly done" as for "stuck on the first
+/// phase", and it is the screen a new user spends the longest looking at. Both
+/// phones and the desktop now draw this, in the same order, from the same
+/// per-phase report the core has always sent.
+///
+/// `counts` carries the eased figures from `SyncProgressSmoother` where the
+/// caller has one; without it the rows fall back to the raw counts, which is
+/// correct and merely less lively.
+///
+/// One phase per line, not one row across. It fitted at the default text size
+/// and fell apart above it: four labels and their counts competing for one line
+/// meant everything truncated to "Albu… 1k/6…", which is worse than useless —
+/// and it was worst at exactly the sizes chosen by people who need the text
+/// bigger. Stacked, each phase gets a full line at any size, and the list
+/// doubles as a checklist: what is done, what is happening, what is still to
+/// come.
+struct SyncPhaseChecklist: View {
+    let details: [SyncProgress.PhaseDetail]
+    var counts: [SyncProgress.Phase: Int] = [:]
+
+    /// Status glyphs are sized in scaled points so they keep their proportion to
+    /// the label beside them instead of shrivelling as the text grows.
+    @ScaledMetric(relativeTo: .caption) private var glyph: CGFloat = 11
+
+    var body: some View {
+        // `.contain`, not `.combine`: every row speaks its own state ("Albums,
+        // done"), and combining would flatten the whole checklist into one
+        // summary — losing exactly the detail this exists to give.
+        breakdown(details)
+            .accessibilityElement(children: .contain)
+    }
+
     private func breakdown(_ details: [SyncProgress.PhaseDetail]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(details) { detail in
@@ -275,7 +299,7 @@ struct SyncStatusBar: View {
         // "0.1k" step is 100 items, so the number would still sit still for
         // seconds at a time — the very thing the smoothing exists to fix.
         // Finished and queued rows stay compact, where width matters more.
-        let synced = smoother.counts[d.phase] ?? d.synced
+        let synced = counts[d.phase] ?? d.synced
         // A zero total means "not known yet", not "there are none".
         let total = (d.total ?? 0) > 0 ? d.total : nil
         if d.state == .syncing {
