@@ -160,6 +160,34 @@ public final class AppEnvironment: ObservableObject {
 
     /// The active server, or `nil` when the user needs to sign in.
     @Published public private(set) var active: ActiveServer?
+
+    /// Every server signed in to, active first.
+    ///
+    /// The desktop has held several and switched between them for as long as it
+    /// has existed; the phone held one, so signing in to a second meant signing
+    /// out of the first — and on Plex that means approving a link again. The
+    /// catalogue was never the obstacle: it is keyed by server id and has always
+    /// held several side by side.
+    @Published private(set) var servers: [StoredSession] = []
+
+    /// Which of ``servers`` is the one being browsed.
+    var activeServerIdentity: String? { servers.first?.identity }
+
+    /// Re-read the store. Called wherever the set of servers can have changed —
+    /// the store is the record, this is only the copy the UI binds to.
+    func refreshServers() {
+        servers = SessionPersistence.all(credentials)
+    }
+
+    /// Forget a session that failed to finish setting up.
+    ///
+    /// Distinct from signing out: nothing was ever established, so there is no
+    /// journal tombstone to write and no playback to stop. It exists so a failed
+    /// *second* sign-in cannot take the first one down with it.
+    private func withdraw(_ session: StoredSession) {
+        SessionPersistence.remove(session.identity, from: credentials)
+        refreshServers()
+    }
     /// The signed-in user's profile photo on the active server, once fetched.
     /// `nil` means "no photo" (or not looked up yet) and the UI falls back to the
     /// generic person icon — see ``refreshUserAvatar()``.
@@ -385,7 +413,10 @@ public final class AppEnvironment: ObservableObject {
             // server threw from inside activation rather than merely failing to
             // detect capabilities.
             if case MozzError.unauthorized = error {
-                SessionPersistence.clear(credentials)
+                // That server, not every server. With more than one signed in,
+                // one expired token used to sign the user out of all of them.
+                SessionPersistence.remove(saved.identity, from: credentials)
+                refreshServers()
                 return
             }
             lastSyncSummary = "Couldn't reach \(saved.serverName). Your library is still here."
@@ -488,13 +519,15 @@ public final class AppEnvironment: ObservableObject {
         } catch is CancellationError {
             // Don't clobber a newer activation's freshly-saved session/state.
             guard generation == activationGeneration else { return }
-            SessionPersistence.clear(credentials)
+            // Withdraw the session being added, not the ones already signed in:
+            // adding a second server and backing out must leave the first alone.
+            withdraw(stored)
             libraryChoice = []
             pendingSetupGeneration = nil
             isSettingUp = false                 // cancelled → leave setup
         } catch {
             guard generation == activationGeneration else { return }
-            SessionPersistence.clear(credentials)
+            withdraw(stored)
             setupError = "Couldn't finish setting up: \(error.localizedDescription)"
             // Keep `isSettingUp` true so the setup screen shows the error + retry.
         }
@@ -642,6 +675,9 @@ public final class AppEnvironment: ObservableObject {
             invalidateRadio()
         }
         active = ActiveServer(connection: connection, backend: backend, capabilities: capabilities)
+        // One place: every route into a live server comes through here — launch
+        // restore, a fresh sign-in, and switching between two already signed in.
+        refreshServers()
         if let stored = SessionPersistence.load(credentials) {
             ServerSyncJournal.upsert(
                 stored,
@@ -943,7 +979,91 @@ public final class AppEnvironment: ObservableObject {
         }
     }
 
-    public func signOut() {
+    /// Browse a different one of the servers already signed in to.
+    ///
+    /// Not a sign-out and a sign-in: the token, the chosen library and the
+    /// catalogue for both servers stay exactly where they are, so switching back
+    /// costs nothing and a Plex account is never asked to approve a link twice.
+    ///
+    /// The activation itself is the same one a launch does, which is what makes
+    /// this safe — everything derived from the server (backend, capabilities,
+    /// catalogue scope, continuity) is rebuilt by that one path rather than by a
+    /// second copy of it here.
+    func switchTo(_ session: StoredSession) {
+        guard session.identity != activeServerIdentity else { return }
+        guard let chosen = SessionPersistence.activate(session.identity, in: credentials) else { return }
+
+        // Whatever the last server was doing stops. A sync writing into one
+        // catalogue while the UI reads another is the kind of thing that looks
+        // like corruption.
+        activationTask?.cancel()
+        cancelSync()
+        mediaBackfillTask?.cancel()
+        playback.stop()
+        invalidateRadio()
+        libraryChoice = []
+        pendingSetupGeneration = nil
+        setupError = nil
+        canEnterEarly = false
+        lastDonatedSubject = nil
+        refreshServers()
+
+        activationGeneration &+= 1
+        let generation = activationGeneration
+        isSettingUp = true
+        activationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.activate(chosen)
+                guard generation == self.activationGeneration else { return }
+                self.isSettingUp = false
+                self.syncHistoryIfDue(forceRelayState: true)
+            } catch {
+                guard generation == self.activationGeneration else { return }
+                // The server stays signed in. It is unreachable, not rejected,
+                // and dropping it would make a flaky network cost a sign-in.
+                self.isSettingUp = false
+                self.lastSyncSummary = "Couldn't reach \(chosen.serverName). Your library is still here."
+            }
+        }
+    }
+
+    /// Sign out of one server, keeping the others.
+    ///
+    /// Signing out of the one being browsed moves to the next; signing out of
+    /// the last one is the same as signing out of the app.
+    func signOut(_ session: StoredSession) {
+        let wasActive = session.identity == activeServerIdentity
+        guard wasActive else {
+            // A server sitting in the list is not attached to anything, so there
+            // is nothing to tear down — but its catalogue should still be
+            // tombstoned, the same as the active one's.
+            ServerSyncJournal.tombstone(
+                serverID: session.serverId ?? session.identity,
+                kind: session.kind,
+                in: credentials)
+            SessionPersistence.remove(session.identity, from: credentials)
+            refreshServers()
+            return
+        }
+
+        if let next = SessionPersistence.all(credentials).first(where: { $0.identity != session.identity }) {
+            // Tear the current one down the way a full sign-out does, then bring
+            // the next one up — rather than leaving the app on a server it has
+            // just forgotten the credentials for.
+            tearDownActiveServer()
+            SessionPersistence.remove(session.identity, from: credentials)
+            refreshServers()
+            switchTo(next)
+            return
+        }
+
+        signOut()
+    }
+
+    /// Everything a sign-out does to the *server*, without touching the store.
+    /// Shared by signing out of one and signing out of all.
+    private func tearDownActiveServer() {
         if let connection = active?.connection {
             ServerSyncJournal.tombstone(
                 serverID: connection.id,
@@ -951,11 +1071,10 @@ public final class AppEnvironment: ObservableObject {
                 in: credentials)
         }
         activationTask?.cancel()
-        // A parked library choice belongs to the account being left.
         libraryChoice = []
         pendingSetupGeneration = nil
-        cancelSync()                 // stop any in-flight catalog sync for the old account
-        mediaBackfillTask?.cancel()  // and the background format backfill
+        cancelSync()
+        mediaBackfillTask?.cancel()
         isSettingUp = false
         setupError = nil
         canEnterEarly = false
@@ -963,7 +1082,13 @@ public final class AppEnvironment: ObservableObject {
         invalidateRadio()
         let enrichment = self.enrichment
         Task { await enrichment.cancel() }
+    }
+
+    /// Sign out of every server.
+    public func signOut() {
+        tearDownActiveServer()
         SessionPersistence.clear(credentials)
+        refreshServers()
         active = nil
         lastDonatedSubject = nil
         #if os(iOS)

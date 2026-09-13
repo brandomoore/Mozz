@@ -165,10 +165,22 @@ struct SettingsView: View {
                     }
 
                     Section {
-                        Button(role: .destructive) { env.signOut() } label: {
-                            Text("Sign Out")
-                                .frame(maxWidth: .infinity)
+                        // Signing out lives on the Servers screen now, next to
+                        // the thing being signed out of. A single "Sign Out"
+                        // here would be ambiguous the moment there are two.
+                        NavigationLink {
+                            ServersView()
+                        } label: {
+                            LabeledContent {
+                                Text(env.servers.count > 1 ? "\(env.servers.count)" : "")
+                            } label: {
+                                Label("Servers", mozz: "server.rack")
+                            }
                         }
+                    } footer: {
+                        Text(env.servers.count > 1
+                             ? "Switch between your servers, or add another."
+                             : "Sign in to another server, or sign out.")
                     }
                 }
 

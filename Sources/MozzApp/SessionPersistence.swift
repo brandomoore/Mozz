@@ -35,19 +35,55 @@ struct StoredSession: Codable, Sendable {
     var serverId: String? = nil
 }
 
-/// Reads/writes the single active ``StoredSession`` as a JSON blob under one
-/// credential key.
+extension StoredSession {
+    /// What makes this the *same* server across saves.
+    ///
+    /// `serverId` where there is one, because that is the catalogue's identity
+    /// and deliberately survives the address changing. Sessions saved before it
+    /// was recorded fall back to backend-plus-address, which is what the app
+    /// used to derive the id from anyway — so an old entry and its re-saved
+    /// self still collapse to one row rather than appearing twice.
+    var identity: String {
+        if let serverId, !serverId.isEmpty { return serverId }
+        return "\(kind.rawValue)\u{0}\(baseURL.absoluteString)"
+    }
+}
+
+/// Every server this installation is signed in to, with the active one first.
 ///
-/// The key is the one entry routed through iCloud Keychain (see
-/// ``RoutingCredentialStore``), so a sign-in on one device brings the server up
-/// on the user's other devices — and a sign-out clears it everywhere.
+/// Mozz's rule is that a platform lacking a capability is behind, never exempt,
+/// and the desktop has held several servers and switched between them for as
+/// long as it has existed. The phones held exactly one: signing in to a second
+/// meant signing out of the first, which on Plex means approving a link again.
+/// The catalogue was never the obstacle — it is keyed by server id and has
+/// always held several side by side — only this store was.
+///
+/// First-is-active rather than a separate id, matching Android's accounts file
+/// and the desktop's: one ordering to reason about, and no way for the pointer
+/// and the list to disagree.
 enum SessionPersistence {
+    /// The active session, alone. Still written, still read.
+    ///
+    /// This is the entry routed through iCloud Keychain (see
+    /// ``RoutingCredentialStore``), so a sign-in on one device brings the server
+    /// up on the user's other devices — and it is what a build without the list
+    /// reads. Keeping it in step means an older Mozz on the same account still
+    /// signs in, rather than finding nothing and asking for a Plex link.
     static let key = "session.active"
 
+    /// All of them, active first. Device-local: which servers a laptop is
+    /// signed in to is not obviously what a phone should adopt wholesale, and
+    /// the active one already travels through `key`.
+    static let listKey = "session.servers"
+
+    // MARK: One session — unchanged surface
+
+    /// Save this as the active session, and fold it into the list.
     static func save(_ session: StoredSession, to store: any CredentialStore) {
-        guard let data = try? JSONEncoder().encode(session),
-              let json = String(data: data, encoding: .utf8) else { return }
-        try? store.setString(json, forKey: key)
+        writeActive(session, to: store)
+        var sessions = all(store).filter { $0.identity != session.identity }
+        sessions.insert(session, at: 0)
+        writeList(sessions, to: store)
     }
 
     static func load(_ store: any CredentialStore) -> StoredSession? {
@@ -56,7 +92,71 @@ enum SessionPersistence {
         return try? JSONDecoder().decode(StoredSession.self, from: data)
     }
 
+    /// Forget every server. Sign out of the app, not of one account.
     static func clear(_ store: any CredentialStore) {
         try? store.setString(nil, forKey: key)
+        try? store.setString(nil, forKey: listKey)
+    }
+
+    // MARK: Several
+
+    /// Every signed-in server, active first.
+    static func all(_ store: any CredentialStore) -> [StoredSession] {
+        if let json = try? store.string(forKey: listKey),
+           let data = json.data(using: .utf8),
+           let sessions = try? JSONDecoder().decode([StoredSession].self, from: data),
+           !sessions.isEmpty {
+            return sessions
+        }
+        // No list yet: every installation before this one, and every device that
+        // has only ever had `key` synced to it from another. The active session
+        // is the list until something writes a longer one.
+        return load(store).map { [$0] } ?? []
+    }
+
+    /// Make this the active server, keeping the rest.
+    ///
+    /// Returns nil when the session is not one of the saved ones, which is a
+    /// caller asking to switch to something already signed out of rather than
+    /// something to force into the list.
+    @discardableResult
+    static func activate(_ identity: String, in store: any CredentialStore) -> StoredSession? {
+        let sessions = all(store)
+        guard let chosen = sessions.first(where: { $0.identity == identity }) else { return nil }
+        writeActive(chosen, to: store)
+        writeList([chosen] + sessions.filter { $0.identity != identity }, to: store)
+        return chosen
+    }
+
+    /// Sign out of one server. Returns whichever is active afterwards, or nil
+    /// when that was the last one and the app is now signed out entirely.
+    @discardableResult
+    static func remove(_ identity: String, from store: any CredentialStore) -> StoredSession? {
+        let remaining = all(store).filter { $0.identity != identity }
+        writeList(remaining, to: store)
+        guard let next = remaining.first else {
+            try? store.setString(nil, forKey: key)
+            return nil
+        }
+        writeActive(next, to: store)
+        return next
+    }
+
+    // MARK: Writing
+
+    private static func writeActive(_ session: StoredSession, to store: any CredentialStore) {
+        guard let data = try? JSONEncoder().encode(session),
+              let json = String(data: data, encoding: .utf8) else { return }
+        try? store.setString(json, forKey: key)
+    }
+
+    private static func writeList(_ sessions: [StoredSession], to store: any CredentialStore) {
+        guard !sessions.isEmpty else {
+            try? store.setString(nil, forKey: listKey)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(sessions),
+              let json = String(data: data, encoding: .utf8) else { return }
+        try? store.setString(json, forKey: listKey)
     }
 }
