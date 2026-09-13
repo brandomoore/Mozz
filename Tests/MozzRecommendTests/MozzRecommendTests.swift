@@ -185,14 +185,14 @@ final class RecommendationServiceTests: XCTestCase {
         let set = try await service.generateMozzWeekly(serverId: server.id, limit: 30, seed: 7)
         XCTAssertEqual(set.title, "Mozz Weekly")
 
-        let refs = Set(try await service.mozzWeeklyTracks().map(\.remoteId))
+        let refs = Set(try await service.mozzWeeklyTracks(serverId: server.id).map(\.remoteId))
         XCTAssertTrue(refs.contains("rock1"))
         XCTAssertTrue(refs.contains("rock2"))
         XCTAssertFalse(refs.contains("jazz1"), "no Jazz affinity → not recommended")
         XCTAssertFalse(refs.contains("p1"), "recently played is excluded from rediscovery")
         XCTAssertFalse(refs.contains("p4"))
 
-        let items = try await service.mozzWeeklyItems()
+        let items = try await service.mozzWeeklyItems(serverId: server.id)
         XCTAssertEqual(items.map(\.rank), Array(1...items.count))
         XCTAssertTrue(items.allSatisfy { $0.inLibrary })
         XCTAssertNotNil(items.first?.reason)
@@ -222,27 +222,27 @@ final class RecommendationServiceTests: XCTestCase {
 
         // Baseline: both discovery tracks surface.
         _ = try await service.generateMozzWeekly(serverId: server.id, limit: 30, seed: 7)
-        var refs = Set(try await service.mozzWeeklyTracks().map(\.remoteId))
+        var refs = Set(try await service.mozzWeeklyTracks(serverId: server.id).map(\.remoteId))
         XCTAssertTrue(refs.contains("rock1"))
         XCTAssertTrue(refs.contains("rock2"))
 
         // Suppress a single track → it drops; the other stays.
         try await service.suppressTrack(remoteId: "rock1", serverId: server.id)
         _ = try await service.generateMozzWeekly(serverId: server.id, limit: 30, seed: 7)
-        refs = Set(try await service.mozzWeeklyTracks().map(\.remoteId))
+        refs = Set(try await service.mozzWeeklyTracks(serverId: server.id).map(\.remoteId))
         XCTAssertFalse(refs.contains("rock1"), "suppressed track excluded")
         XCTAssertTrue(refs.contains("rock2"), "other tracks unaffected")
 
         // Suppress an artist → every track by that artist drops.
         try await service.suppressArtist(remoteId: "ar3", serverId: server.id)
         _ = try await service.generateMozzWeekly(serverId: server.id, limit: 30, seed: 7)
-        refs = Set(try await service.mozzWeeklyTracks().map(\.remoteId))
+        refs = Set(try await service.mozzWeeklyTracks(serverId: server.id).map(\.remoteId))
         XCTAssertFalse(refs.contains("rock2"), "suppressed artist's tracks excluded")
 
         // Un-suppress restores the track.
         try await service.unsuppressTrack(remoteId: "rock1", serverId: server.id)
         _ = try await service.generateMozzWeekly(serverId: server.id, limit: 30, seed: 7)
-        refs = Set(try await service.mozzWeeklyTracks().map(\.remoteId))
+        refs = Set(try await service.mozzWeeklyTracks(serverId: server.id).map(\.remoteId))
         XCTAssertTrue(refs.contains("rock1"), "un-suppressed track returns")
     }
 
@@ -263,9 +263,9 @@ final class RecommendationServiceTests: XCTestCase {
         let set = try await service.generateMozzWeekly(serverId: server.id, seed: 7)
         XCTAssertEqual(set.title, "New to Your Library", "thin history falls back to cold start")
 
-        let refs = Set(try await service.mozzWeeklyTracks().map(\.remoteId))
+        let refs = Set(try await service.mozzWeeklyTracks(serverId: server.id).map(\.remoteId))
         XCTAssertEqual(refs, ["a", "b"], "cold start surfaces recently-added regardless of genre")
-        let items = try await service.mozzWeeklyItems()
+        let items = try await service.mozzWeeklyItems(serverId: server.id)
         XCTAssertEqual(items.first?.reason, "New to your library")
     }
 
@@ -281,11 +281,11 @@ final class RecommendationServiceTests: XCTestCase {
         ], serverId: server.id)
         let service = RecommendationService(store: store, now: { now })
         _ = try await service.generateMozzWeekly(serverId: server.id, seed: 1)
-        let first = try await service.mozzWeeklyItems().count
+        let first = try await service.mozzWeeklyItems(serverId: server.id).count
         XCTAssertGreaterThan(first, 0)
         // Regenerate → the old items are replaced, not duplicated.
         _ = try await service.generateMozzWeekly(serverId: server.id, seed: 1)
-        let second = try await service.mozzWeeklyItems().count
+        let second = try await service.mozzWeeklyItems(serverId: server.id).count
         XCTAssertEqual(second, first)
     }
 
@@ -322,7 +322,7 @@ final class RecommendationServiceTests: XCTestCase {
         let service = RecommendationService(store: store, now: { now })
         try await service.generateHomeMixes(serverId: server.id, seed: 7)
 
-        let mixes = try await service.homeMixes()
+        let mixes = try await service.homeMixes(serverId: server.id)
         let ids = mixes.map(\.id)
         XCTAssertTrue(ids.contains("supermix"))
         XCTAssertTrue(ids.contains("daily-mix-1"))
@@ -385,7 +385,7 @@ final class RecommendationServiceTests: XCTestCase {
 
         let service = RecommendationService(store: store, now: { now })
         try await service.generateHomeMixes(serverId: server.id, seed: 1)
-        let mixes = try await service.homeMixes()
+        let mixes = try await service.homeMixes(serverId: server.id)
         XCTAssertTrue(mixes.isEmpty, "thin history → no personalized batch mixes")
     }
 }

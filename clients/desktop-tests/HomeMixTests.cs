@@ -185,7 +185,7 @@ public class HomeMixTests
         var result = await HomeMixLoader.LoadAsync(
             readMixes: () => Task.FromResult<IReadOnlyList<HomeMix>>([
                 Mix("daily-1", "Daily Mix 1", null),
-                Mix(HomeMixSchedule.MozzWeeklyId, "Mozz Weekly", null, now.ToUnixTimeSeconds()),
+                Weekly(now.ToUnixTimeSeconds()),
             ]),
             readLikedCount: () => Task.FromResult(0),
             generateMixes: serverId =>
@@ -213,7 +213,7 @@ public class HomeMixTests
         var result = await HomeMixLoader.LoadAsync(
             readMixes: () => Task.FromResult<IReadOnlyList<HomeMix>>([
                 Mix("daily-1", "Daily Mix 1", null),
-                Mix(HomeMixSchedule.MozzWeeklyId, "Mozz Weekly", null, now.AddDays(-8).ToUnixTimeSeconds()),
+                Weekly(now.AddDays(-8).ToUnixTimeSeconds()),
             ]),
             readLikedCount: () => Task.FromResult(0),
             generateMixes: _ => throw new InvalidOperationException("dailies are not due"),
@@ -323,8 +323,13 @@ public class HomeMixTests
         Assert.Equal("No generated mixes yet — play more music and check back soon.", result.Message);
     }
 
-    private static HomeMix Mix(string id, string title, string? subtitle, double? generatedAt = 123) =>
-        new(id, title, subtitle, "supermix", "art", generatedAt);
+    private static HomeMix Mix(string id, string title, string? subtitle, double? generatedAt = 123,
+                               string kind = "supermix") =>
+        new(id, title, subtitle, kind, "art", generatedAt);
+
+    /// Mozz Weekly is found by its kind now that a row id names its server.
+    private static HomeMix Weekly(double? generatedAt) =>
+        Mix("mozz-weekly@srv", "Mozz Weekly", null, generatedAt, HomeMixSchedule.MozzWeeklyKind);
 
     private static Track Track(string title, double duration = 180) =>
         new(
@@ -387,7 +392,7 @@ public class HomeMixTests
         var mixes = new List<HomeMix>
         {
             new("supermix", "Supermix", null, "supermix", null, 0),
-            new(HomeMixSchedule.MozzWeeklyId, "Mozz Weekly", null, "weekly", null, now.ToUnixTimeSeconds()),
+            new("mozz-weekly@srv", "Mozz Weekly", null, HomeMixSchedule.MozzWeeklyKind, null, now.ToUnixTimeSeconds()),
         };
 
         var result = await HomeMixLoader.LoadAsync(

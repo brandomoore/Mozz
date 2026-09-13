@@ -537,8 +537,10 @@ public actor RecommendationService {
                                     excluding: suppressedRefs, excludingArtists: suppressedArtists,
                                     using: &rng)
 
-        let set = RecommendationSetRecord(id: Self.mozzWeeklyId, title: title, kind: "forgotten",
-                                          generatedAt: nowDate.timeIntervalSince1970)
+        let set = RecommendationSetRecord(id: Self.setId(Self.mozzWeeklyId, serverId: serverId),
+                                          title: title, kind: "forgotten",
+                                          generatedAt: nowDate.timeIntervalSince1970,
+                                          serverId: serverId)
         let items = blended.enumerated().map { index, sc in
             RecommendationItemRecord(setId: set.id, trackRef: sc.trackRef, rank: index + 1,
                                      score: sc.score, inLibrary: true, reason: sc.reason)
@@ -605,16 +607,30 @@ public actor RecommendationService {
 
     // MARK: - Read-back for the UI (precomputed → instant + offline)
 
-    public func mozzWeeklySet() async throws -> RecommendationSetRecord? {
-        try await store.set(id: Self.mozzWeeklyId)
+    /// A mix's row id, which has to name the server as well as the mix.
+    ///
+    /// The ids are fixed strings — "supermix", "mozz-weekly", "daily-1" — and
+    /// `id` is the table's primary key, so two servers generating their mixes
+    /// would write the same rows and the second would overwrite the first. The
+    /// server goes in the id rather than the ids being left alone and the key
+    /// widened, because `recommendation_item` references this one column.
+    ///
+    /// Clients treat these as opaque and match on `kind`, which is what the
+    /// Mozz Weekly tile is found by.
+    public static func setId(_ id: String, serverId: ServerID) -> String {
+        "\(id)@\(serverId)"
     }
 
-    public func mozzWeeklyTracks() async throws -> [TrackRecord] {
-        try await store.tracks(forSet: Self.mozzWeeklyId)
+    public func mozzWeeklySet(serverId: ServerID) async throws -> RecommendationSetRecord? {
+        try await store.set(id: Self.setId(Self.mozzWeeklyId, serverId: serverId))
     }
 
-    public func mozzWeeklyItems() async throws -> [RecommendationItemRecord] {
-        try await store.items(forSet: Self.mozzWeeklyId)
+    public func mozzWeeklyTracks(serverId: ServerID) async throws -> [TrackRecord] {
+        try await store.tracks(forSet: Self.setId(Self.mozzWeeklyId, serverId: serverId))
+    }
+
+    public func mozzWeeklyItems(serverId: ServerID) async throws -> [RecommendationItemRecord] {
+        try await store.items(forSet: Self.setId(Self.mozzWeeklyId, serverId: serverId))
     }
 
     // MARK: - Home mixes (multiple precomputed sets)
@@ -660,7 +676,7 @@ public actor RecommendationService {
         let taste = TasteProfile.build(from: signals, now: nowDate)
         var rng = SeededGenerator(seed: seed ?? UInt64(bitPattern: Int64(nowSec)))
 
-        try await store.deleteSets(kinds: Self.homeBatchKinds)
+        try await store.deleteSets(kinds: Self.homeBatchKinds, serverId: serverId)
         guard !taste.isThin else { return }
         let scorer = await contentScorer(for: serverId)
         let suppressedArtists = (try? await store.suppressedArtistIds(serverId: serverId)) ?? []
@@ -675,7 +691,7 @@ public actor RecommendationService {
                                config: .init(limit: 60, explorationJitter: 0.12, maxPerArtist: 5, maxPerAlbum: 3),
                                excludingRefs: suppressedRefs, excludingArtists: suppressedArtists,
                                extra: superSonic, rng: &rng) {
-            try await save(id: "supermix", title: "Supermix", kind: Self.kindSupermix, items: ranked)
+            try await save(id: "supermix", title: "Supermix", kind: Self.kindSupermix, serverId: serverId, items: ranked)
         }
 
         // Daily Mixes — one coherent mix per top genre.
@@ -687,7 +703,7 @@ public actor RecommendationService {
                                    config: .init(limit: 40, explorationJitter: 0.12, maxPerArtist: 4, maxPerAlbum: 2),
                                    excludingRefs: suppressedRefs, excludingArtists: suppressedArtists,
                                    rng: &rng) {
-                try await save(id: "daily-mix-\(i + 1)", title: "Daily Mix \(i + 1)", kind: Self.kindDaily, items: ranked)
+                try await save(id: "daily-mix-\(i + 1)", title: "Daily Mix \(i + 1)", kind: Self.kindDaily, serverId: serverId, items: ranked)
             }
         }
 
@@ -735,7 +751,7 @@ public actor RecommendationService {
             let merged = Self.interleaveSeedFirst(own: own, neighbours: neighbours)
             if merged.count >= Self.minTracks {
                 let title = seedArtist.name.isEmpty ? "Artist Mix" : "\(seedArtist.name) Mix"
-                try await save(id: "artist-mix-\(i + 1)", title: title, kind: Self.kindArtist, items: merged)
+                try await save(id: "artist-mix-\(i + 1)", title: title, kind: Self.kindArtist, serverId: serverId, items: merged)
             }
         }
 
@@ -748,7 +764,7 @@ public actor RecommendationService {
             let items = replayPool.enumerated().map { idx, c in
                 ScoredCandidate(candidate: c, score: Double(replayPool.count - idx), source: "content", reason: "On repeat")
             }
-            try await save(id: "replay-mix", title: "Replay", kind: Self.kindReplay, items: items)
+            try await save(id: "replay-mix", title: "Replay", kind: Self.kindReplay, serverId: serverId, items: items)
         }
     }
 
@@ -784,8 +800,8 @@ public actor RecommendationService {
 
     /// Every Home mix (the daily batch + Mozz Weekly), each with a representative
     /// cover and subtitle, ordered for display. Instant + offline (reads only).
-    public func homeMixes() async throws -> [HomeMix] {
-        let sets = try await store.allSets()
+    public func homeMixes(serverId: ServerID) async throws -> [HomeMix] {
+        let sets = try await store.allSets(serverId: serverId)
         let art = try await store.representativeArtworkKeys()
         return sets.map { s in
             HomeMix(id: s.id, title: s.title, subtitle: Self.decodeMeta(s.params)?.subtitle,
@@ -860,12 +876,15 @@ public actor RecommendationService {
 
     /// Persist a mix set + its ranked items, stashing a subtitle (top artists) in
     /// `params` for the tile.
-    private func save(id: String, title: String, kind: String, items: [ScoredCandidate]) async throws {
-        let set = RecommendationSetRecord(id: id, title: title, kind: kind,
+    private func save(id: String, title: String, kind: String, serverId: ServerID,
+                      items: [ScoredCandidate]) async throws {
+        let rowId = Self.setId(id, serverId: serverId)
+        let set = RecommendationSetRecord(id: rowId, title: title, kind: kind,
                                           generatedAt: now().timeIntervalSince1970,
-                                          params: Self.encodeMeta(subtitle: Self.subtitle(from: items.map(\.candidate))))
+                                          params: Self.encodeMeta(subtitle: Self.subtitle(from: items.map(\.candidate))),
+                                          serverId: serverId)
         let records = items.enumerated().map { idx, sc in
-            RecommendationItemRecord(setId: id, trackRef: sc.trackRef, rank: idx + 1,
+            RecommendationItemRecord(setId: rowId, trackRef: sc.trackRef, rank: idx + 1,
                                      score: sc.score, inLibrary: true, reason: sc.reason)
         }
         try await store.saveRecommendationSet(set, items: records)

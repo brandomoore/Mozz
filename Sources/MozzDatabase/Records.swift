@@ -389,21 +389,37 @@ public struct RecommendationSetRecord: Codable, FetchableRecord, PersistableReco
     /// JSON: seed, weights, filters.
     public var params: String?
 
+    /// Whose listening this was built from.
+    ///
+    /// A mix is derived from play history, which is per-server, so a mix belongs
+    /// to a server as surely as an album does. It had no such column: mixes were
+    /// stored globally and Home listed all of them, so switching servers left
+    /// the previous one's mixes on screen — drawn from artwork keys the new
+    /// server has never heard of, which rendered as blank tiles. Invisible while
+    /// an installation could only be signed in to one server at a time.
+    ///
+    /// Optional only so rows written before the column existed decode; the
+    /// migration backfills every one of them and deletes any it cannot place.
+    public var serverId: String?
+
     public enum CodingKeys: String, CodingKey {
         case id
         case title
         case kind
         case generatedAt = "generated_at"
         case params
+        case serverId = "server_id"
     }
 
     public init(id: String, title: String, kind: String,
-                generatedAt: Double = Date().timeIntervalSince1970, params: String? = nil) {
+                generatedAt: Double = Date().timeIntervalSince1970, params: String? = nil,
+                serverId: String? = nil) {
         self.id = id
         self.title = title
         self.kind = kind
         self.generatedAt = generatedAt
         self.params = params
+        self.serverId = serverId
     }
 }
 

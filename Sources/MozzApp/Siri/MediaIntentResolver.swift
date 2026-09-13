@@ -369,8 +369,8 @@ struct MediaIntentResolver {
     /// otherwise the whole library shuffled. Never an error — someone talking to a
     /// speaker asked for music, and the library is full of it.
     private func personalMix(serverId: ServerID) async -> MediaIntentOutcome {
-        if let set = try? await env.recommendations.mozzWeeklySet(),
-           let rows = try? await env.recommendations.mozzWeeklyTracks(), !rows.isEmpty {
+        if let set = try? await env.recommendations.mozzWeeklySet(serverId: serverId),
+           let rows = try? await env.recommendations.mozzWeeklyTracks(serverId: serverId), !rows.isEmpty {
             return .resolved(MediaIntentResolution(subject: .mix(set.id), title: set.title,
                                                    type: .music, tracks: rows.map { $0.toDomain() }))
         }

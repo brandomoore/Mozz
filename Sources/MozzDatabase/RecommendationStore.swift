@@ -419,25 +419,37 @@ public struct RecommendationStore: Sendable {
         try await database.read { db in try RecommendationSetRecord.fetchOne(db, key: id) }
     }
 
-    /// Every persisted recommendation set (Home lists and orders these).
-    public func allSets() async throws -> [RecommendationSetRecord] {
+    /// Every persisted recommendation set for one server (Home lists and orders
+    /// these).
+    ///
+    /// Scoped, because a mix is built from play history and history is per
+    /// server. Unscoped, an installation signed in to two servers showed one
+    /// server's mixes on the other's Home.
+    public func allSets(serverId: String) async throws -> [RecommendationSetRecord] {
         try await database.read { db in
-            try RecommendationSetRecord.fetchAll(db, sql: "SELECT * FROM recommendation_set")
+            try RecommendationSetRecord.fetchAll(
+                db,
+                sql: "SELECT * FROM recommendation_set WHERE server_id = ?",
+                arguments: [serverId])
         }
     }
 
-    /// Delete every set (and its items) of the given kinds. Used to clear a stale
-    /// batch of mixes before regenerating, so removed slots don't linger.
-    public func deleteSets(kinds: [String]) async throws {
+    /// Delete every set (and its items) of the given kinds, for one server. Used
+    /// to clear a stale batch of mixes before regenerating, so removed slots
+    /// don't linger — and scoped so regenerating one server's mixes does not
+    /// throw away another's.
+    public func deleteSets(kinds: [String], serverId: String) async throws {
         guard !kinds.isEmpty else { return }
         try await database.write { db in
             let ph = databasePlaceholders(kinds.count)
-            let args = StatementArguments(kinds)
+            let args = StatementArguments(kinds + [serverId])
             try db.execute(sql: """
                 DELETE FROM recommendation_item WHERE set_id IN
-                    (SELECT id FROM recommendation_set WHERE kind IN (\(ph)))
+                    (SELECT id FROM recommendation_set WHERE kind IN (\(ph)) AND server_id = ?)
                 """, arguments: args)
-            try db.execute(sql: "DELETE FROM recommendation_set WHERE kind IN (\(ph))", arguments: args)
+            try db.execute(
+                sql: "DELETE FROM recommendation_set WHERE kind IN (\(ph)) AND server_id = ?",
+                arguments: args)
         }
     }
 
@@ -461,12 +473,14 @@ public struct RecommendationStore: Sendable {
         }
     }
 
-    /// The most recently generated set of a given kind, if any.
-    public func latestSet(kind: String) async throws -> RecommendationSetRecord? {
+    /// The most recently generated set of a given kind on one server, if any.
+    public func latestSet(kind: String, serverId: String) async throws -> RecommendationSetRecord? {
         try await database.read { db in
             try RecommendationSetRecord.fetchOne(db, sql: """
-                SELECT * FROM recommendation_set WHERE kind = ? ORDER BY generated_at DESC LIMIT 1
-                """, arguments: [kind])
+                SELECT * FROM recommendation_set
+                WHERE kind = ? AND server_id = ?
+                ORDER BY generated_at DESC LIMIT 1
+                """, arguments: [kind, serverId])
         }
     }
 

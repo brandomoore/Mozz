@@ -731,7 +731,8 @@ final class SchemaAndWriteTests: XCTestCase {
         XCTAssertEqual(features?.featureSource, "ondevice")
 
         // recommendation set + items round-trip: rank order + in-library resolve.
-        let set = RecommendationSetRecord(id: "mozz-weekly", title: "Mozz Weekly", kind: "forgotten")
+        let set = RecommendationSetRecord(id: "mozz-weekly", title: "Mozz Weekly", kind: "forgotten",
+                                          serverId: server.id)
         try await store.saveRecommendationSet(set, items: [
             RecommendationItemRecord(setId: "mozz-weekly", trackRef: ref2, rank: 1, score: 0.9, inLibrary: true, reason: "More Jazz"),
             RecommendationItemRecord(setId: "mozz-weekly", trackRef: ref1, rank: 2, score: 0.5, inLibrary: true, reason: "More Rock"),
@@ -742,7 +743,7 @@ final class SchemaAndWriteTests: XCTestCase {
         XCTAssertEqual(items.first?.trackRef, ref2)
         let resolved = try await store.tracks(forSet: "mozz-weekly")
         XCTAssertEqual(resolved.map(\.remoteId), ["t2", "t1"])   // in-library only, in rank order
-        let latest = try await store.latestSet(kind: "forgotten")
+        let latest = try await store.latestSet(kind: "forgotten", serverId: server.id)
         XCTAssertEqual(latest?.id, "mozz-weekly")
 
         // PRUNE SURVIVAL: wipe the whole catalog. features + items key on the

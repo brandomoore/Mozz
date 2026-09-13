@@ -769,6 +769,79 @@ enum Schema {
         migrator.registerMigration("v23.repairPlexServerIdentitiesAgain") { db in
             try repairPlexServerIdentities(db)
         }
+
+        /// Mixes belong to the server whose listening built them.
+        ///
+        /// They were stored globally, so an installation signed in to two
+        /// servers showed one server's mixes on the other's Home — with covers
+        /// requested from a server that had never heard of those artwork keys,
+        /// which drew as blank tiles. Nothing was wrong while only one server
+        /// could be signed in to at a time.
+        ///
+        /// The backfill is exact rather than a guess: `recommendation_item`
+        /// keys on `serverId:remoteId`, so joining an item back to its track
+        /// says which server the set was built from. The first item by rank
+        /// decides — every item in a set comes from one catalogue.
+        ///
+        /// A set whose items no longer resolve to any track cannot be placed
+        /// under a server and is deleted. That is not a loss worth avoiding:
+        /// mixes are derived, they regenerate, and the alternative is a row
+        /// that can never be shown under any server and never cleaned up.
+        migrator.registerMigration("v24.mixesBelongToAServer") { db in
+            try db.alter(table: "recommendation_set") { t in
+                t.add(column: "server_id", .text)
+            }
+            try backfillMixServerIds(db)
+        }
+    }
+
+    /// Place every mix under the server whose listening built it.
+    ///
+    /// Named rather than inline so it can be tested against a row written the
+    /// old way, which is the only way to know the backfill is right — it runs
+    /// once, on a real library, and there is no second chance at it.
+    static func backfillMixServerIds(_ db: Database) throws {
+        try db.execute(sql: """
+            UPDATE recommendation_set SET server_id = (
+                SELECT t.serverId
+                FROM recommendation_item ri
+                JOIN track t ON (t.serverId || ':' || t.remoteId) = ri.track_ref
+                WHERE ri.set_id = recommendation_set.id
+                ORDER BY ri.rank
+                LIMIT 1)
+            WHERE server_id IS NULL
+            """)
+        try db.execute(sql: """
+            DELETE FROM recommendation_item WHERE set_id IN
+                (SELECT id FROM recommendation_set WHERE server_id IS NULL)
+            """)
+        try db.execute(sql: "DELETE FROM recommendation_set WHERE server_id IS NULL")
+
+        // And give them the ids they would have been written with.
+        //
+        // Not cosmetic. A mix row's id is `{mix}@{serverId}` now, so that two
+        // servers can each have their own — and a migrated row keeping its bare
+        // "mozz-weekly" would not be the row the next generation upserts. The
+        // batch mixes are cleared by kind before regenerating and would survive
+        // either way; Mozz Weekly is not, so Home would have shown two of it.
+        //
+        // The item table references this column and the foreign key does not
+        // cascade updates, so both sides move together.
+        // Both sides move inside one transaction, so the item rows point at a
+        // set id that does not exist yet for the length of one statement.
+        // Deferring the check to commit is what lets them cross.
+        try db.execute(sql: "PRAGMA defer_foreign_keys = ON")
+        try db.execute(sql: """
+            UPDATE recommendation_item SET set_id = (
+                SELECT s.id || '@' || s.server_id
+                FROM recommendation_set s
+                WHERE s.id = recommendation_item.set_id)
+            WHERE set_id IN (SELECT id FROM recommendation_set WHERE id NOT LIKE '%@%')
+            """)
+        try db.execute(sql: """
+            UPDATE recommendation_set SET id = id || '@' || server_id
+            WHERE id NOT LIKE '%@%'
+            """)
     }
 
     static func repairPlexServerIdentities(_ db: Database) throws {

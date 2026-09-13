@@ -197,8 +197,8 @@ class MozzLibrary(private val core: MozzCore) {
      * Read only. They are produced by [generateHomeMixes] and [generateMozzWeekly]
      * on a schedule, so opening Home never waits on a generator.
      */
-    suspend fun homeMixes(): List<HomeMix> =
-        core.call<List<HomeMix>>(CoreRequest(cmd = "homeMixes")) ?: emptyList()
+    suspend fun homeMixes(serverId: String): List<HomeMix> =
+        core.call<List<HomeMix>>(CoreRequest(cmd = "homeMixes", serverId = serverId)) ?: emptyList()
 
     /** Rebuild the daily mixes. Costly on a large library — see `HomeMixSchedule`. */
     suspend fun generateHomeMixes(serverId: String) {

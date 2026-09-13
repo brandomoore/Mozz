@@ -103,7 +103,7 @@ fun HomeRoot(
         val added = runCatching { library.recentlyAddedAlbums(account.serverId, limit = 20) }.getOrNull()
         val lists = runCatching { library.playlists(account.serverId) }.getOrNull()
         val liked = runCatching { library.likedTracksCount(account.serverId) }.getOrNull()
-        val sets = runCatching { library.homeMixes() }.getOrNull()
+        val sets = runCatching { library.homeMixes(account.serverId) }.getOrNull()
 
         if (played != null) recentlyPlayed = played
         if (added != null) recentlyAdded = added
@@ -116,7 +116,7 @@ fun HomeRoot(
         // runs after the page is already up, because generating is the expensive
         // part and nothing on screen is waiting for it.
         HomeMixSchedule.refreshIfStale(context, library, account.serverId, mixes)
-        runCatching { library.homeMixes() }.getOrNull()?.let { mixes = it }
+        runCatching { library.homeMixes(account.serverId) }.getOrNull()?.let { mixes = it }
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -451,7 +451,10 @@ private object HomeMixSchedule {
     private const val GENERATED_AT = "homeMixesGeneratedAt"
     private const val DAY_SECONDS = 24 * 60 * 60.0
     private const val WEEK_SECONDS = 7 * DAY_SECONDS
-    private const val MOZZ_WEEKLY_ID = "mozz-weekly"
+    // Its kind, not its id: mix row ids now name the server they belong to, so
+    // two servers can each have their own set, and an id match would stop
+    // finding it the moment there is more than one.
+    private const val MOZZ_WEEKLY_KIND = "forgotten"
 
     suspend fun refreshIfStale(
         context: Context,
@@ -460,7 +463,7 @@ private object HomeMixSchedule {
         mixes: List<HomeMix>,
     ) {
         val now = System.currentTimeMillis() / 1000.0
-        val weekly = mixes.firstOrNull { it.id == MOZZ_WEEKLY_ID }
+        val weekly = mixes.firstOrNull { it.kind == MOZZ_WEEKLY_KIND }
         if (weekly == null || now - weekly.generatedAt >= WEEK_SECONDS) {
             runCatching { library.generateMozzWeekly(serverId) }
         }

@@ -2028,7 +2028,13 @@ private func dispatch(
         ))
 
     case "homeMixes":
-        let mixes = try await session.recommendations.homeMixes().map(wire)
+        guard let serverId else {
+            return sessionFailure(request.id, request.cmd, "homeMixes needs serverId")
+        }
+        // Scoped, because a mix is built from play history and history belongs
+        // to a server. Unscoped, an installation signed in to two servers showed
+        // one server's mixes on the other's Home.
+        let mixes = try await session.recommendations.homeMixes(serverId: serverId).map(wire)
         return sessionSuccess(request, mixes)
 
     case "generateHomeMixes":
@@ -2062,11 +2068,17 @@ private func dispatch(
         return sessionSuccess(request, wire(set))
 
     case "mozzWeeklyTracks":
-        let rows = try await session.recommendations.mozzWeeklyTracks()
+        guard let serverId else {
+            return sessionFailure(request.id, request.cmd, "mozzWeeklyTracks needs serverId")
+        }
+        let rows = try await session.recommendations.mozzWeeklyTracks(serverId: serverId)
         return sessionSuccess(request, rows.map(wire))
 
     case "mozzWeeklyItems":
-        let rows = try await session.recommendations.mozzWeeklyItems()
+        guard let serverId else {
+            return sessionFailure(request.id, request.cmd, "mozzWeeklyItems needs serverId")
+        }
+        let rows = try await session.recommendations.mozzWeeklyItems(serverId: serverId)
         return sessionSuccess(request, rows.map(wire))
 
     case "radioBatch":

@@ -297,7 +297,15 @@ public sealed record HomeMixLoadResult(
 /// </summary>
 public static class HomeMixSchedule
 {
-    public const string MozzWeeklyId = "mozz-weekly";
+    /// <summary>
+    /// What marks the Mozz Weekly tile.
+    ///
+    /// Its kind, not its id: mix row ids now name the server they belong to, so
+    /// that two servers can each have their own set — and an id match would
+    /// stop finding it the moment there is more than one. The kind has always
+    /// been on the wire and has never been server-specific.
+    /// </summary>
+    public const string MozzWeeklyKind = "forgotten";
     public static readonly TimeSpan DailyMixInterval = TimeSpan.FromDays(1);
     public static readonly TimeSpan WeeklyInterval = TimeSpan.FromDays(7);
 
@@ -307,7 +315,7 @@ public static class HomeMixSchedule
     /// </summary>
     public static bool WeeklyIsStale(IReadOnlyList<HomeMix> mixes, DateTimeOffset now)
     {
-        var weekly = mixes.FirstOrDefault(m => string.Equals(m.Id, MozzWeeklyId, StringComparison.Ordinal));
+        var weekly = mixes.FirstOrDefault(m => string.Equals(m.Kind, MozzWeeklyKind, StringComparison.Ordinal));
         if (weekly?.GeneratedAt is not { } generatedAt) return true;
         return now - FromUnixSeconds(generatedAt) >= WeeklyInterval;
     }

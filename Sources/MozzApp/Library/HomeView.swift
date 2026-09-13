@@ -149,7 +149,7 @@ struct HomeView: View {
         // control and cancel the remaining awaits — with `?? []` that wiped every
         // section below the grid. Assign once at the end, and only for reads that
         // succeeded (a cancelled/failed read keeps the prior value, never blank).
-        let mixesResult = try? await env.recommendations.homeMixes()
+        let mixesResult = try? await env.recommendations.homeMixes(serverId: serverId)
         let played = try? await env.repository.recentlyPlayedTracks(serverId: serverId, limit: 20)
         let added = try? await env.repository.recentlyAddedTracks(serverId: serverId, limit: 20)
         let lists = try? await env.repository.allPlaylists(serverId: serverId)
@@ -165,7 +165,7 @@ struct HomeView: View {
         // Then refresh the mixes if stale (off-main) and re-read them.
         await env.ensureMozzWeekly()
         await env.ensureHomeMixes()
-        if let refreshed = try? await env.recommendations.homeMixes() { mixes = refreshed }
+        if let refreshed = try? await env.recommendations.homeMixes(serverId: serverId) { mixes = refreshed }
     }
 
     /// One cell of the quick-access grid.
