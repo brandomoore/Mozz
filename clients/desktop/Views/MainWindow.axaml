@@ -302,19 +302,135 @@
                     <Border Padding="32,84,24,0" ClipToBounds="False">
                         <Panel>
 
-                    <StackPanel IsVisible="{Binding IsLibraryEmpty}"
-                                HorizontalAlignment="Center" VerticalAlignment="Center"
-                                Spacing="11" MaxWidth="430">
-                        <TextBlock Text="Nothing here yet" Classes="sectionTitle"
-                                   HorizontalAlignment="Center" />
-                        <TextBlock Classes="secondary" TextAlignment="Center" TextWrapping="Wrap"
-                                   Text="Connect a Plex, Jellyfin or Subsonic server and Mozz will sync your library." />
-                        <Button Content="Connect a server"
-                                HorizontalAlignment="Center"
-                                Classes="primary"
-                                Command="{Binding SelectSectionCommand}"
-                                CommandParameter="{x:Static vm:LibrarySection.Settings}" />
-                    </StackPanel>
+                    <!--
+                        First run: the actual sign-in, not directions to it.
+
+                        This used to be a sentence and a button that took you to
+                        Settings to find the form — so the desktop's onboarding
+                        was "go and look for it" while both phones opened on a
+                        picker of the three backends. The whole flow binds to the
+                        same Connect view model the Settings pane uses, so there
+                        is one sign-in state machine and two places it is drawn.
+                    -->
+                    <ScrollViewer IsVisible="{Binding IsLibraryEmpty}" HorizontalScrollBarVisibility="Disabled">
+                      <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                                  Spacing="18" MaxWidth="430" Margin="0,0,0,40">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="Connect your server" Classes="sectionTitle"
+                                       HorizontalAlignment="Center" />
+                            <TextBlock Classes="secondary" TextAlignment="Center" TextWrapping="Wrap"
+                                       Text="Mozz plays the music on a server you run. Pick the one you have." />
+                        </StackPanel>
+
+                        <Border Background="{DynamicResource Surface}" CornerRadius="16" Padding="10">
+                            <ItemsControl ItemsSource="{Binding Connect.Backends}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate DataType="vm:BackendOption">
+                                        <Button Classes="backendRow" Margin="0,1"
+                                                Classes.chosen="{Binding IsSelected}"
+                                                Command="{Binding $parent[Window].DataContext.Connect.SelectKindCommand}"
+                                                CommandParameter="{Binding Kind}">
+                                            <Grid ColumnDefinitions="Auto,*">
+                                                <Border Grid.Column="0" Width="36" Height="36" CornerRadius="18"
+                                                        Background="{Binding ChipBackground}">
+                                                    <controls:TablerIcon Filled="True"
+                                                                         Size="{Binding GlyphSize}"
+                                                                         Data="{Binding Icon}"
+                                                                         Brush="{Binding Tint}"
+                                                                         HorizontalAlignment="Center"
+                                                                         VerticalAlignment="Center" />
+                                                </Border>
+                                                <TextBlock Grid.Column="1" Text="{Binding Label}" Margin="13,0,0,0"
+                                                           VerticalAlignment="Center" Classes="primary"
+                                                           FontWeight="SemiBold" />
+                                            </Grid>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Border>
+
+                        <TextBlock Classes="secondary" TextWrapping="Wrap" TextAlignment="Center"
+                                   Text="{Binding Connect.KindHint}" />
+
+                        <StackPanel Spacing="9" IsVisible="{Binding Connect.NeedsCredentials}">
+                            <TextBox Text="{Binding Connect.ServerUrl}"
+                                     PlaceholderText="{Binding Connect.UrlPlaceholder}"
+                                     CornerRadius="8" Padding="11,9" BorderThickness="0"
+                                     Background="{DynamicResource SearchBackground}" />
+                            <TextBox Text="{Binding Connect.Username}"
+                                     PlaceholderText="Username"
+                                     CornerRadius="8" Padding="11,9" BorderThickness="0"
+                                     Background="{DynamicResource SearchBackground}" />
+                            <TextBox Text="{Binding Connect.Password}"
+                                     PasswordChar="&#x2022;"
+                                     PlaceholderText="Password"
+                                     CornerRadius="8" Padding="11,9" BorderThickness="0"
+                                     Background="{DynamicResource SearchBackground}" />
+                        </StackPanel>
+
+                        <Button Content="Sign in" Classes="primary" HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Center"
+                                IsEnabled="{Binding !Connect.IsBusy}"
+                                Command="{Binding Connect.SignInCommand}" />
+
+                        <!-- Plex's approval, in the same place rather than on a
+                             screen of its own: the link is the whole flow. -->
+                        <Border IsVisible="{Binding Connect.PlexLinkUrl, Converter={x:Static ObjectConverters.IsNotNull}}"
+                                Background="{DynamicResource SurfaceRaised}" CornerRadius="12" Padding="14">
+                            <StackPanel Spacing="10">
+                                <TextBlock Classes="secondary" TextWrapping="Wrap"
+                                           Text="Plex will ask you to confirm this computer. Come back here once it says you are linked." />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Content="Open Plex" Classes="primary" Command="{Binding Connect.OpenPlexLinkCommand}" />
+                                    <Button Content="Copy link" Classes="secondary" Command="{Binding Connect.CopyPlexLinkCommand}" />
+                                    <Button Content="Cancel" Classes="secondary" Command="{Binding Connect.CancelPlexCommand}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Whose Plex Home this is, when it holds more than one person. -->
+                        <Border IsVisible="{Binding Connect.HasPlexHomeUsers}"
+                                Background="{DynamicResource SurfaceRaised}" CornerRadius="12" Padding="14">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Who is listening?" Classes="primary" FontWeight="SemiBold" />
+                                <TextBlock Classes="secondary" TextWrapping="Wrap"
+                                           Text="Ratings and play counts follow whoever you pick." />
+                                <ItemsControl ItemsSource="{Binding Connect.PlexHomeUsers}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Button Classes="backendRow" Margin="0,1"
+                                                    Command="{Binding $parent[Window].DataContext.Connect.SelectPlexHomeUserCommand}"
+                                                    CommandParameter="{Binding}">
+                                                <TextBlock Text="{Binding Name}" Classes="primary" />
+                                            </Button>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
+                        <Border IsVisible="{Binding Connect.NeedsPlexProfilePIN}"
+                                Background="{DynamicResource SurfaceRaised}" CornerRadius="12" Padding="14">
+                            <StackPanel Spacing="9">
+                                <TextBlock Text="This profile has a PIN" Classes="primary" FontWeight="SemiBold" />
+                                <TextBox Text="{Binding Connect.PlexProfilePIN}"
+                                         PasswordChar="&#x2022;" PlaceholderText="PIN"
+                                         CornerRadius="8" Padding="11,9" BorderThickness="0"
+                                         Background="{DynamicResource SearchBackground}" />
+                                <Button Content="Continue" Classes="primary"
+                                        Command="{Binding Connect.ConfirmPlexProfilePINCommand}" />
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Text="{Binding Connect.Message}" Classes="secondary" TextWrapping="Wrap"
+                                   TextAlignment="Center"
+                                   IsVisible="{Binding Connect.Message, Converter={x:Static ObjectConverters.IsNotNull}}" />
+
+                        <TextBlock Classes="secondary" TextAlignment="Center" FontSize="11.5"
+                                   Text="Free forever. Open source, GPL-3.0." />
+                      </StackPanel>
+                    </ScrollViewer>
 
                     <StackPanel IsVisible="{Binding ShowHomeEmpty}"
                                 HorizontalAlignment="Center" VerticalAlignment="Center"
@@ -325,11 +441,59 @@
                                   Text="Play more music and Mozz will build Home from your listening history." />
                     </StackPanel>
 
+                    <DockPanel IsVisible="{Binding ShowHomeRows}" LastChildFill="True">
+                    <!--
+                        A running scan, reported from inside the library.
+
+                        The desktop only ever said this in Settings, so a sync
+                        started from there — or one still finishing after a
+                        first sign-in — was invisible from the page whose
+                        shelves it was filling, and a half-empty Home looked
+                        like a broken library rather than a busy one. iOS has
+                        carried this card on Home since it shipped and Android
+                        now does too.
+                    -->
+                    <Border DockPanel.Dock="Top" IsVisible="{Binding Connect.IsSyncing}"
+                            Background="{Binding PageCardBackground}" CornerRadius="14"
+                            Padding="15,13" Margin="0,0,8,18">
+                        <StackPanel Spacing="10">
+                            <StackPanel Orientation="Horizontal" Spacing="9">
+                                <controls:TablerIcon Size="14" Data="{StaticResource IconRefresh}"
+                                                     Brush="{DynamicResource Accent}"
+                                                     VerticalAlignment="Center" />
+                                <TextBlock Text="Syncing your library" FontWeight="SemiBold"
+                                           Foreground="{Binding PageTextPrimary}" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding Connect.SyncDetail}" VerticalAlignment="Center"
+                                           Foreground="{Binding PageTextSecondary}" FontSize="11.5" />
+                            </StackPanel>
+                            <ProgressBar Value="{Binding Connect.SyncProgress}" Maximum="1"
+                                         IsIndeterminate="{Binding !Connect.SyncProgress}"
+                                         Height="4" CornerRadius="2" />
+                            <ItemsControl ItemsSource="{Binding Connect.SyncPhaseRows}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid ColumnDefinitions="18,*,Auto" Margin="0,2,0,0">
+                                            <controls:TablerIcon Grid.Column="0" Size="12" Data="{StaticResource IconCheck}"
+                                                                 Brush="{Binding $parent[Window].DataContext.PageTextSecondary}"
+                                                                 IsVisible="{Binding IsDone}" />
+                                            <controls:TablerIcon Grid.Column="0" Size="12" Data="{StaticResource IconRefresh}"
+                                                                 Brush="{Binding $parent[Window].DataContext.PageTextSecondary}"
+                                                                 IsVisible="{Binding IsSyncing}" />
+                                            <TextBlock Grid.Column="1" Text="{Binding Label}" FontSize="11.5"
+                                                       Foreground="{Binding $parent[Window].DataContext.PageTextSecondary}" />
+                                            <TextBlock Grid.Column="2" Text="{Binding CountText}" FontSize="11.5"
+                                                       Foreground="{Binding $parent[Window].DataContext.PageTextSecondary}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+
                     <!-- Home. A ListBox of rows keeps the mixes grid and every
                          shelf virtualized; each row realizes only the few cards
                          that fit across the current window. -->
-                    <ListBox IsVisible="{Binding ShowHomeRows}"
-                             ItemsSource="{Binding HomeRows}"
+                    <ListBox ItemsSource="{Binding HomeRows}"
                              Background="Transparent" BorderThickness="0"
                              SelectionMode="Single" Padding="0,0,8,112">
                         <ListBox.ItemsPanel>
@@ -606,6 +770,7 @@
                             </DataTemplate>
                         </ListBox.DataTemplates>
                     </ListBox>
+                    </DockPanel>
 
                     <!-- Songs / search results.
                          ListBox rather than ItemsControl: it virtualizes, which is
@@ -2770,18 +2935,39 @@
                                             <Border Background="{DynamicResource SurfaceRaised}" CornerRadius="12" Padding="16">
                                                 <StackPanel Spacing="13">
                                                     <TextBlock Text="Add a server" Classes="primary" FontWeight="SemiBold" />
-                                                    <StackPanel Orientation="Horizontal" Spacing="8">
-                                                        <RadioButton Content="Jellyfin" GroupName="kind"
-                                                                     IsChecked="{Binding Connect.Kind, Converter={StaticResource EnumMatch}, ConverterParameter=Jellyfin}" />
-                                                        <RadioButton Content="Plex" GroupName="kind"
-                                                                     IsChecked="{Binding Connect.Kind, Converter={StaticResource EnumMatch}, ConverterParameter=Plex}" />
-                                                        <RadioButton Content="Subsonic" GroupName="kind"
-                                                                     IsChecked="{Binding Connect.Kind, Converter={StaticResource EnumMatch}, ConverterParameter=Subsonic}" />
-                                                    </StackPanel>
+                                                    <!-- The three backends, with their own marks.
+                                                         Drawn from Connect.Backends so this markup exists
+                                                         once and is used both here and on the first-run
+                                                         panel; three plain radio buttons told the reader
+                                                         nothing about which product was which. -->
+                                                    <ItemsControl ItemsSource="{Binding Connect.Backends}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate DataType="vm:BackendOption">
+                                                                <Button Classes="backendRow" Margin="0,1"
+                                                                        Classes.chosen="{Binding IsSelected}"
+                                                                        Command="{Binding $parent[Window].DataContext.Connect.SelectKindCommand}"
+                                                                        CommandParameter="{Binding Kind}">
+                                                                    <Grid ColumnDefinitions="Auto,*">
+                                                                        <Border Grid.Column="0" Width="34" Height="34" CornerRadius="17"
+                                                                                Background="{Binding ChipBackground}">
+                                                                            <controls:TablerIcon Filled="True"
+                                                                                                 Size="{Binding GlyphSize}"
+                                                                                                 Data="{Binding Icon}"
+                                                                                                 Brush="{Binding Tint}"
+                                                                                                 HorizontalAlignment="Center"
+                                                                                                 VerticalAlignment="Center" />
+                                                                        </Border>
+                                                                        <TextBlock Grid.Column="1" Text="{Binding Label}" Margin="12,0,0,0"
+                                                                                   VerticalAlignment="Center" Classes="primary" />
+                                                                    </Grid>
+                                                                </Button>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
 
                                                     <StackPanel Spacing="9" IsVisible="{Binding Connect.NeedsCredentials}">
                                                         <TextBox Text="{Binding Connect.ServerUrl}"
-                                                                 PlaceholderText="192.168.1.10:8096"
+                                                                 PlaceholderText="{Binding Connect.UrlPlaceholder}"
                                                                  CornerRadius="8" Padding="11,9" BorderThickness="0"
                                                                  Background="{DynamicResource SearchBackground}" />
                                                         <TextBox Text="{Binding Connect.Username}"
@@ -2795,9 +2981,13 @@
                                                                  Background="{DynamicResource SearchBackground}" />
                                                     </StackPanel>
 
+                                                    <!-- What to expect of the backend that was picked. The
+                                                         three genuinely differ, and "Subsonic" being a
+                                                         protocol rather than a product is the one thing
+                                                         most likely to make someone running Navidrome
+                                                         think Mozz cannot talk to their server. -->
                                                     <TextBlock Classes="secondary" TextWrapping="Wrap"
-                                                               IsVisible="{Binding Connect.IsPlex}"
-                                                               Text="Plex signs in through plex.tv. Mozz will give you a link to approve in your browser." />
+                                                               Text="{Binding Connect.KindHint}" />
 
                                                     <Border IsVisible="{Binding Connect.PlexLinkUrl, Converter={x:Static ObjectConverters.IsNotNull}}"
                                                             Background="{DynamicResource Surface}"

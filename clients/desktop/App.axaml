@@ -28,6 +28,10 @@
                      by tools/icons/build-desktop-icons.sh. Merging them here makes
                      every Icon* key StaticResource-able app-wide. -->
                 <ResourceInclude Source="avares://Mozz.Desktop/Assets/Icons.axaml" />
+                <!-- The three backends' own marks, generated from
+                     tools/icons/brand-svg/ by tools/icons/build-brand-icons.py.
+                     Kept out of Icons.axaml because those are Tabler's. -->
+                <ResourceInclude Source="avares://Mozz.Desktop/Assets/BrandIcons.axaml" />
             </ResourceDictionary.MergedDictionaries>
 
             <FontFamily x:Key="InterFont">avares://Avalonia.Fonts.Inter/Assets#Inter</FontFamily>
@@ -978,6 +982,31 @@
         </Style>
         <Style Selector="Panel.tinted Button.tile.cardTile:focus-visible /template/ ContentPresenter">
             <Setter Property="Background" Value="Transparent" />
+        </Style>
+
+        <!--
+            A backend row in the sign-in picker.
+
+            A row, not a radio button: iOS and Android both present this as a
+            card of tappable rows with the products' own marks, and three
+            unlabelled radio dots made the reader work out which product each
+            word belonged to. `chosen` is the selected one — a wash rather than
+            an accent fill, the same way the navigation marks its own selection.
+        -->
+        <Style Selector="Button.backendRow">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="10,8" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.backendRow:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource SurfaceHover}" />
+        </Style>
+        <Style Selector="Button.backendRow.chosen /template/ ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource NavSelected}" />
         </Style>
 
     </Application.Styles>

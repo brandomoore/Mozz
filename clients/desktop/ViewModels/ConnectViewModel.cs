@@ -28,6 +28,9 @@ public sealed partial class ConnectViewModel : ViewModelBase
         Accounts.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasAccounts));
         PlexHomeUsers.CollectionChanged += (_, _) =>
             OnPropertyChanged(nameof(HasPlexHomeUsers));
+        // The starting Kind is assigned as a field initializer, which fires no
+        // change hook, so the picker would open with nothing marked.
+        foreach (var option in Backends) option.IsSelected = option.Kind == Kind;
     }
 
     public System.Collections.ObjectModel.ObservableCollection<ServerAccount> Accounts { get; }
@@ -55,16 +58,56 @@ public sealed partial class ConnectViewModel : ViewModelBase
     private string? _pendingPlexClientIdentifier;
 
     public bool IsPlex => Kind == BackendKind.Plex;
+    public bool IsJellyfin => Kind == BackendKind.Jellyfin;
+    public bool IsSubsonic => Kind == BackendKind.Subsonic;
     public bool NeedsCredentials => Kind != BackendKind.Plex;
     public bool HasAccounts => Accounts.Count > 0;
     public bool HasPlexHomeUsers => PlexHomeUsers.Count > 0;
+
+    /// <summary>
+    /// What to expect of the backend that was picked.
+    ///
+    /// The three differ enough that one sentence cannot cover them — Plex never
+    /// takes a password, Jellyfin wants the address you open in a browser, and
+    /// "Subsonic" is a protocol rather than a product, which is the single
+    /// thing most likely to make someone running Navidrome think Mozz cannot
+    /// talk to their server. iOS says all three on its login screens; the
+    /// desktop said nothing at all.
+    /// </summary>
+    public string KindHint => Kind switch
+    {
+        BackendKind.Plex =>
+            "Plex signs in through plex.tv. Mozz gives you a link to approve in your browser — no password is typed here.",
+        BackendKind.Jellyfin =>
+            "Your Jellyfin address, and the name and password you sign in with there.",
+        _ =>
+            "Any Subsonic or OpenSubsonic server — Navidrome, Gonic, Ampache, LMS. Mozz detects which one it is.",
+    };
+
+    /// <summary>Placeholder that looks like the address this backend usually has.</summary>
+    public string UrlPlaceholder => Kind == BackendKind.Jellyfin
+        ? "192.168.1.10:8096"
+        : "music.example.com";
+
+    /// <summary>The three backends, for the picker. See <see cref="BackendOption"/>.</summary>
+    public IReadOnlyList<BackendOption> Backends { get; } = BackendOption.All();
+
+    /// <summary>Pick a backend. The picker rows bind to this rather than to Kind
+    /// directly, so choosing one also clears whatever the last attempt said.</summary>
+    [RelayCommand]
+    private void SelectKind(BackendKind kind) => Kind = kind;
 
     partial void OnKindChanged(BackendKind value)
     {
         CancelPlexPoll();
         Message = null;
         OnPropertyChanged(nameof(IsPlex));
+        OnPropertyChanged(nameof(IsJellyfin));
+        OnPropertyChanged(nameof(IsSubsonic));
         OnPropertyChanged(nameof(NeedsCredentials));
+        OnPropertyChanged(nameof(KindHint));
+        OnPropertyChanged(nameof(UrlPlaceholder));
+        foreach (var option in Backends) option.IsSelected = option.Kind == value;
     }
 
     // MARK: Sign in

@@ -70,6 +70,7 @@
     <Compile Include="..\desktop\ViewModels\DownloadRows.cs" />
     <Compile Include="..\desktop\ViewModels\PlaybackQueue.cs" />
     <Compile Include="..\desktop\ViewModels\ContinuityPresentation.cs" />
+    <Compile Include="..\desktop\ViewModels\BackendOption.cs" />
     <Compile Include="..\desktop\ViewModels\SearchPresentation.cs" />
     <Compile Include="..\desktop\ViewModels\GenrePresentation.cs" />
     <Compile Include="..\desktop\ViewModels\SettingsModels.cs" />
