@@ -515,6 +515,18 @@ public sealed class MozzServer(MozzCore core, ISecretStore secrets, string? acco
         var previousIDs = previousAccounts
             .Select(account => account.ServerId)
             .ToHashSet(StringComparer.Ordinal);
+        // Which server is being browsed, before this rewrites the list.
+        //
+        // The list below is rebuilt from the journal's order, which has nothing
+        // to do with the user's choice — and the head of the accounts file IS
+        // that choice. Without this, a relay sync arriving from another device
+        // silently moves you to a different server's library.
+        // Canonical, because the two sides spell a Plex id differently: an
+        // account is normalised to `plex-{machine}` on the way into the file
+        // and the journal keeps whatever id the record was written under. A raw
+        // comparison silently never matches for Plex, which is the case that
+        // matters most.
+        var activeBefore = CanonicalServerId(previousAccounts.FirstOrDefault());
         var previousRecords = ServerSyncJournal.Load(secrets)
             .ToDictionary(record => record.Id, StringComparer.Ordinal);
         var merged = ServerSyncJournal.Merge(
@@ -550,6 +562,10 @@ public sealed class MozzServer(MozzCore core, ISecretStore secrets, string? acco
                 MusicSectionIds = record.MusicSectionIds,
                 AllMusicLibraries = record.AllMusicLibraries ?? false,
             };
+            // Normalised here too, so the list this writes matches the one
+            // SaveAccount writes rather than depending on the next read to
+            // tidy it up.
+            account = NormalizeSavedAccount(account);
             accounts.Add(account);
             secrets.Set(SecretKey(account.ServerId), token);
             if (record.AccountToken is not null)
@@ -559,6 +575,21 @@ public sealed class MozzServer(MozzCore core, ISecretStore secrets, string? acco
                     record.AccountToken);
             }
         }
+        // Put the browsed server back at the head. A server signed out of
+        // elsewhere is gone and cannot be restored to it, in which case whatever
+        // the merge produced first takes over — which is the same rule as
+        // signing out of it locally.
+        if (activeBefore is not null)
+        {
+            var index = accounts.FindIndex(a => CanonicalServerId(a) == activeBefore);
+            if (index > 0)
+            {
+                var active = accounts[index];
+                accounts.RemoveAt(index);
+                accounts.Insert(0, active);
+            }
+        }
+
         WriteAccounts(accounts);
         var added = accounts
             .Where(account => !previousIDs.Contains(account.ServerId))
@@ -613,25 +644,44 @@ public sealed class MozzServer(MozzCore core, ISecretStore secrets, string? acco
         IReadOnlyList<ServerAccount> accounts,
         bool writeIfChanged)
     {
+        // ORDER IS PRESERVED, and that is not cosmetic: the head of this list is
+        // the server being browsed.
+        //
+        // This used to emit every non-Plex account and then every Plex one,
+        // which reordered the file on every read and wrote the reordering back.
+        // With one account it made no difference. With a Plex server and a
+        // Navidrome, the Plex one could never stay selected — it was shuffled
+        // behind on the next read and the app moved to the other library on its
+        // own, with nothing to explain it.
+        //
+        // Several rows can still collapse into one: Plex accounts sharing a
+        // machine identifier are the same server reached at different addresses.
+        // The survivor takes the position of the first of them.
         var normalized = new List<ServerAccount>();
         var changed = false;
+        var mergedMachines = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var account in accounts.Where(a => a.Kind != BackendKind.Plex || PlexMachineIdentifier(a) is null))
+        foreach (var account in accounts)
         {
-            var fixedAccount = NormalizeSavedAccount(account);
-            changed |= fixedAccount != account;
-            normalized.Add(fixedAccount);
-        }
+            var machine = account.Kind == BackendKind.Plex ? PlexMachineIdentifier(account) : null;
+            if (machine is null)
+            {
+                var fixedAccount = NormalizeSavedAccount(account);
+                changed |= fixedAccount != account;
+                normalized.Add(fixedAccount);
+                continue;
+            }
 
-        foreach (var group in accounts
-                     .Where(a => a.Kind == BackendKind.Plex && PlexMachineIdentifier(a) is not null)
-                     .GroupBy(a => PlexMachineIdentifier(a)!))
-        {
+            // The group's later members are dropped where the first one stood.
+            if (!mergedMachines.Add(machine)) { changed = true; continue; }
+
+            var group = accounts
+                .Where(a => a.Kind == BackendKind.Plex && PlexMachineIdentifier(a) == machine)
+                .ToList();
             var chosen = group
                 .OrderBy(a => PlexAddressRank(a.BaseUrl))
                 .ThenByDescending(a => HasCredential(a))
                 .First();
-            var machine = group.Key;
             var canonical = chosen with
             {
                 ServerId = $"plex-{machine}",
@@ -646,7 +696,7 @@ public sealed class MozzServer(MozzCore core, ISecretStore secrets, string? acco
             };
             normalized.Add(canonical);
 
-            if (canonical != chosen || group.Count() > 1) changed = true;
+            if (canonical != chosen || group.Count > 1) changed = true;
             MigrateCredential(group, canonical.ServerId, SecretKey);
             MigrateCredential(group, canonical.ServerId, PlexAccountKey);
         }

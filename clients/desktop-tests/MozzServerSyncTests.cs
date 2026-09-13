@@ -166,4 +166,71 @@ public sealed class MozzServerSyncTests
         Assert.Single(imported.Changed);
         Assert.Equal("new-token", secrets.Get($"token.{existing.Id}"));
     }
+
+    /// <summary>
+    /// A sync from another device must not move you to a different library.
+    ///
+    /// The head of the accounts list is which server is being browsed. The
+    /// import rebuilds that list from the journal's order, which has nothing to
+    /// do with anyone's choice — so without holding the head, signing in to
+    /// something on a laptop silently switched the desktop's library.
+    /// </summary>
+    [Fact]
+    public void AnImportDoesNotChangeWhichServerIsBeingBrowsed()
+    {
+        var (server, secrets, _) = MakeServer();
+        secrets.Set("clientIdentifier", "this-device-client");
+        server.SaveAccount(Account("plex:machine"), secret: "plex-token", accountToken: null);
+
+        server.ImportSyncedServers([new RelayServerRecordDto
+        {
+            Id = "jellyfin:user",
+            Kind = "jellyfin",
+            Name = "Laptop Jellyfin",
+            BaseUrl = "https://music.example.test",
+            Token = "remote-token",
+            UpdatedAtMS = 500,
+        }]);
+
+        var accounts = server.SavedAccounts();
+        Assert.Equal(2, accounts.Count);
+        Assert.Equal("plex-machine", accounts[0].ServerId);
+    }
+
+    /// <summary>
+    /// Unless the server being browsed is the one signed out elsewhere — then
+    /// there is nothing to hold on to and the next one takes over, which is the
+    /// same rule as signing out of it locally.
+    /// </summary>
+    [Fact]
+    public void TheBrowsedServerBeingSignedOutElsewherePromotesTheNext()
+    {
+        var (server, secrets, _) = MakeServer();
+        secrets.Set("clientIdentifier", "this-device-client");
+        server.SaveAccount(Account("plex:machine"), secret: "plex-token", accountToken: null);
+        server.ImportSyncedServers([new RelayServerRecordDto
+        {
+            Id = "jellyfin:user",
+            Kind = "jellyfin",
+            Name = "Laptop Jellyfin",
+            BaseUrl = "https://music.example.test",
+            Token = "remote-token",
+            UpdatedAtMS = 500,
+        }]);
+
+        server.ImportSyncedServers([new RelayServerRecordDto
+        {
+            Id = "plex-machine",
+            Kind = "plex",
+            Name = "Home Plex",
+            BaseUrl = "https://plex.example.test",
+            // Later than the local record, or the merge rightly keeps ours:
+            // saving an account stamps it with the wall clock.
+            UpdatedAtMS = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 10_000,
+            RemovedAtMS = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 10_000,
+        }]);
+
+        var accounts = server.SavedAccounts();
+        Assert.Equal(["jellyfin:user"], accounts.Select(a => a.ServerId));
+    }
 }

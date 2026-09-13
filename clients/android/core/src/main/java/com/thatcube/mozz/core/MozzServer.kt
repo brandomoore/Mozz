@@ -779,7 +779,13 @@ class MozzServer(
      */
     fun importSyncedServers(remote: List<RelayServerRecord>): Int {
         if (remote.isEmpty()) return 0
-        val existing = savedAccounts().associateBy { it.serverId }.toMutableMap()
+        val saved = savedAccounts()
+        // Which server is being browsed, before this rewrites the list. The head
+        // of the accounts file IS that choice, and a tombstone arriving from
+        // another device can drop it — without this, a relay sync silently moves
+        // you to a different server's library.
+        val activeBefore = saved.firstOrNull()?.serverId
+        val existing = saved.associateBy { it.serverId }.toMutableMap()
         var added = 0
         for (record in remote) {
             if (record.isRemoved) {
@@ -814,7 +820,15 @@ class MozzServer(
                 ?.let { secrets.set(plexAccountKey(record.id), it) }
             writeJournal(journal() + (record.id to record.updatedAtMS))
         }
-        writeAccounts(existing.values.toList())
+        // Put the browsed server back at the head. One signed out of elsewhere
+        // is gone and cannot be restored to it, in which case the next takes
+        // over — the same rule as signing out of it locally.
+        val accounts = existing.values.toList()
+        val active = accounts.firstOrNull { it.serverId == activeBefore }
+        writeAccounts(
+            if (active == null) accounts
+            else listOf(active) + accounts.filterNot { it.serverId == activeBefore }
+        )
         return added
     }
 

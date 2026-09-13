@@ -63,6 +63,54 @@ class AccountOrderTest {
         assertEquals(listOf("a", "b"), makeActive(accounts, "gone").map { it.serverId })
     }
 
+    /** What `importSyncedServers` does to the list when the relay brings news. */
+    private fun importPreservingActive(
+        accounts: List<ServerAccount>,
+        incoming: List<ServerAccount>,
+        removed: Set<String> = emptySet(),
+    ): List<ServerAccount> {
+        val activeBefore = accounts.firstOrNull()?.serverId
+        val existing = accounts.associateBy { it.serverId }.toMutableMap()
+        removed.forEach { existing.remove(it) }
+        incoming.forEach { existing[it.serverId] = it }
+        val merged = existing.values.toList()
+        val active = merged.firstOrNull { it.serverId == activeBefore }
+        return if (active == null) merged
+        else listOf(active) + merged.filterNot { it.serverId == activeBefore }
+    }
+
+    /**
+     * A sync from another device must not move you to a different library.
+     *
+     * The head of the accounts list is which server is being browsed, and the
+     * import rebuilds that list from a map — so without holding the head,
+     * signing in to something on a laptop silently switched the phone.
+     */
+    @Test
+    fun anImportDoesNotChangeWhichServerIsBeingBrowsed() {
+        val after = importPreservingActive(
+            listOf(account("a"), account("b")),
+            incoming = listOf(account("c")),
+        )
+        assertEquals("a", after.first().serverId)
+        assertEquals(setOf("a", "b", "c"), after.map { it.serverId }.toSet())
+    }
+
+    /**
+     * Unless the browsed server is the one signed out elsewhere — then there is
+     * nothing to hold on to and the next takes over, the same rule as signing
+     * out of it locally.
+     */
+    @Test
+    fun theBrowsedServerBeingSignedOutElsewherePromotesTheNext() {
+        val after = importPreservingActive(
+            listOf(account("a"), account("b")),
+            incoming = emptyList(),
+            removed = setOf("a"),
+        )
+        assertEquals(listOf("b"), after.map { it.serverId })
+    }
+
     /**
      * The accounts file is plain JSON and is read back by every launch; an
      * account written by this build has to decode in the next one.
