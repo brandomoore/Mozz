@@ -88,9 +88,54 @@ for shell in ios android desktop; do
   fi
 done
 
+# ---------------------------------------------------------------------------
+# Holding more than one of them.
+#
+# Offering all three backends and holding one server at a time are different
+# capabilities, and the phones had the first without the second: signing in to a
+# second server meant signing out of the first, which on Plex costs a link
+# approval. Android's Settings said "soon" where the desktop had a working list.
+#
+# Three verbs, because a list you cannot add to, switch between or leave one of
+# is not the capability.
+echo
+server_surface() {
+  case "$1" in
+    ios) printf '%s\n' "$ROOT/Sources/MozzApp/Settings/ServersView.swift" ;;
+    android) printf '%s\n' "$ROOT/clients/android/app/src/main/java/com/thatcube/mozz/ui/Settings.kt" ;;
+    desktop) printf '%s\n' "$ROOT/clients/desktop/Views/MainWindow.axaml" ;;
+  esac
+}
+
+# What each shell calls the verb. Matched against its own screen rather than
+# anywhere in the tree: a view model that can switch servers proves nothing if
+# no screen offers it, which is exactly the state Android was in.
+verbs_for() {
+  case "$1" in
+    ios) printf '%s\n' 'switchTo' 'Add a Server' 'signOut(' ;;
+    android) printf '%s\n' 'onSwitch' 'Add a server' 'onSignOutOf' ;;
+    desktop) printf '%s\n' 'UseServerCommand' 'Add a server' 'ForgetAccountCommand' ;;
+  esac
+}
+
+for shell in ios android desktop; do
+  file=$(server_surface "$shell")
+  missing=()
+  while read -r verb; do
+    grep -qF "$verb" "$file" 2>/dev/null || missing+=("$verb")
+  done < <(verbs_for "$shell")
+
+  if [ ${#missing[@]} -eq 0 ]; then
+    printf '%-8s can add, switch and leave servers\n' "$shell"
+  else
+    printf '%-8s CANNOT: %s\n' "$shell" "${missing[*]}"
+    status=1
+  fi
+done
+
 if [ "$mode" = "--check" ] && [ "$status" -ne 0 ]; then
   echo
-  echo "A backend the core speaks is not offered by every app."
+  echo "An app is behind on servers."
   echo "The core's list is Sources/MozzCore/BackendKind.swift; the choosers are"
   echo "listed at the top of this script. Add the missing row rather than"
   echo "recording a new baseline — there is no baseline for this one."
