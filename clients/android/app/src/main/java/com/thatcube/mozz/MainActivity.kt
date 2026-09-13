@@ -28,6 +28,7 @@ import com.thatcube.mozz.ui.LinkingScreen
 import com.thatcube.mozz.ui.ProfilePickerScreen
 import com.thatcube.mozz.ui.SignInScreen
 import com.thatcube.mozz.ui.StartingScreen
+import com.thatcube.mozz.core.ServerAccount
 import com.thatcube.mozz.core.SyncStatus
 import com.thatcube.mozz.ui.CredentialsScreen
 import com.thatcube.mozz.ui.SyncingScreen
@@ -105,18 +106,27 @@ class MainActivity : ComponentActivity() {
                     val state by viewModel.state.collectAsStateWithLifecycle()
                     val continuityOffer by viewModel.continuityOffer.collectAsStateWithLifecycle()
                     val syncProgress by viewModel.syncProgress.collectAsStateWithLifecycle()
-                    Root(state, continuityOffer, syncProgress)
+                    val servers by viewModel.servers.collectAsStateWithLifecycle()
+                    Root(state, continuityOffer, syncProgress, servers)
                 }
             }
         }
     }
 
     @Composable
-    private fun Root(state: AppState, continuityOffer: ContinuityOffer?, syncProgress: SyncStatus?) {
+    private fun Root(
+        state: AppState,
+        continuityOffer: ContinuityOffer?,
+        syncProgress: SyncStatus?,
+        servers: List<ServerAccount>,
+    ) {
         when (state) {
             AppState.Starting -> StartingScreen()
 
-            AppState.SignedOut -> SignInScreen(onChoose = viewModel::chooseBackend)
+            is AppState.SignedOut -> SignInScreen(
+                onChoose = viewModel::chooseBackend,
+                onCancel = if (state.canCancel) viewModel::cancelAddServer else null,
+            )
 
             is AppState.EnteringCredentials -> CredentialsScreen(
                 kind = state.kind,
@@ -125,6 +135,7 @@ class MainActivity : ComponentActivity() {
                     viewModel.connectCredentials(state.kind, url, user, password)
                 },
                 onBack = viewModel::chooseAnotherBackend,
+                onCancel = if (state.canCancel) viewModel::cancelAddServer else null,
             )
 
             is AppState.Linking -> LinkingScreen(
@@ -179,6 +190,10 @@ class MainActivity : ComponentActivity() {
                 onResync = viewModel::resync,
                 onSignOut = viewModel::signOut,
                 syncStatus = syncProgress,
+                servers = servers,
+                onSwitchServer = { viewModel.switchTo(it) },
+                onAddServer = viewModel::addServer,
+                onSignOutOfServer = { viewModel.signOutOf(it) },
             )
 
             is AppState.Failed -> FailedScreen(

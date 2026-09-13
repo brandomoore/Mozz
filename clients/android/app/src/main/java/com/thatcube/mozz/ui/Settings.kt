@@ -79,6 +79,12 @@ import kotlinx.coroutines.launch
 import com.thatcube.mozz.ui.theme.LocalMozzSettings
 import com.thatcube.mozz.ui.theme.MozzAppearance
 import com.thatcube.mozz.ui.theme.MozzDarkStyle
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import com.thatcube.mozz.ui.theme.LocalMozzBlackout
 
 /**
  * Settings, in the shape the iPhone has them.
@@ -124,6 +130,9 @@ fun SettingsPage(
     val capabilities by produceState<ServerCapabilities?>(null, account.serverId) {
         value = runCatching { server.capabilities(account.serverId) }.getOrNull()
     }
+    // Read here rather than passed in: the row only needs to know whether to say
+    // a name or a count, and the Servers page itself reads the live list.
+    val serverCount = remember(account.serverId) { server.savedAccounts().size }
     fun open(url: String) {
         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri())) }
     }
@@ -144,17 +153,9 @@ fun SettingsPage(
                         showsChevron = false, onClick = onResync,
                     )
                     SettingsRow(
-                        R.drawable.ic_server, "Server & Libraries", inset,
-                        detail = account.serverName,
-                        soon = true,
-                        onClick = {
-                            nav.open(
-                                Route.SettingsSoon(
-                                    "Server & Libraries",
-                                    "Signing in to more than one server, and choosing which of them a tab is showing.",
-                                )
-                            )
-                        },
+                        R.drawable.ic_server, "Servers", inset,
+                        detail = if (serverCount > 1) "$serverCount servers" else account.serverName,
+                        onClick = { nav.open(Route.SettingsServers) },
                     )
                     SettingsRow(
                         R.drawable.ic_library, "Music Library", inset,
@@ -1330,3 +1331,137 @@ fun SettingsButton(onClick: () -> Unit) {
 
 /** Slow enough to be free, quick enough that the count visibly moves. */
 private const val SONIC_POLL_MS = 5_000L
+
+/**
+ * Every server signed in to, which one is being browsed, and the way to add
+ * another.
+ *
+ * Mozz's rule is that a platform lacking a capability is behind, never exempt.
+ * The desktop has held several servers and switched between them for as long as
+ * it has existed; Android used the first saved account and offered no way to add
+ * a second, so the store could hold more and the app could never reach them.
+ * This row used to say "soon".
+ *
+ * Switching is not a sign-out and a sign-in. Both catalogues stay on the device
+ * and both tokens stay in the keystore, so switching back costs nothing and a
+ * Plex account is never asked to approve a link twice.
+ */
+@Composable
+fun ServersPage(
+    servers: List<ServerAccount>,
+    activeServerId: String?,
+    nav: Navigator,
+    onSwitch: (ServerAccount) -> Unit,
+    onAdd: () -> Unit,
+    onSignOutOf: (ServerAccount) -> Unit,
+) {
+    var signingOutOf by remember { mutableStateOf<ServerAccount?>(null) }
+
+    ListPage("Servers", onBack = nav::back) { inset, _ ->
+        LazyColumn(
+            contentPadding = PaddingValues(horizontal = inset, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(servers, key = { it.serverId }) { account ->
+                ServerRow(
+                    account = account,
+                    isActive = account.serverId == activeServerId,
+                    onClick = { if (account.serverId != activeServerId) onSwitch(account) },
+                    onSignOut = { signingOutOf = account },
+                )
+            }
+
+            item(key = "add") {
+                Spacer(Modifier.height(6.dp))
+                OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+                    Text("Add a server")
+                }
+            }
+
+            item(key = "note") {
+                Text(
+                    "Mozz keeps each server's music separately. Switching is instant — " +
+                        "nothing is downloaded again.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
+        }
+    }
+
+    signingOutOf?.let { account ->
+        AlertDialog(
+            onDismissRequest = { signingOutOf = null },
+            title = { Text("Sign out of ${account.serverName}?") },
+            text = { Text("Its music is removed from this device. Your other servers are untouched.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onSignOutOf(account)
+                    signingOutOf = null
+                }) { Text("Sign out") }
+            },
+            dismissButton = {
+                TextButton(onClick = { signingOutOf = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ServerRow(
+    account: ServerAccount,
+    isActive: Boolean,
+    onClick: () -> Unit,
+    onSignOut: () -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.large,
+        border = if (LocalMozzBlackout.current) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        } else {
+            null
+        },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .clickable(onClick = onClick)
+                .padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            BackendChip(account.kind)
+            Spacer(Modifier.width(13.dp))
+            Column(Modifier.weight(1f)) {
+                Text(account.serverName, style = MaterialTheme.typography.titleSmall)
+                // The address, not the backend's name: the chip already says
+                // which product it is, and with two Jellyfins on one account the
+                // address is the only thing telling them apart.
+                Text(
+                    account.baseUrl.substringAfter("://").trimEnd('/'),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+            if (isActive) {
+                Icon(
+                    painterResource(R.drawable.ic_check),
+                    contentDescription = "Current server",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+            IconButton(onClick = onSignOut) {
+                Icon(
+                    painterResource(R.drawable.ic_circle_x),
+                    contentDescription = "Sign out of ${account.serverName}",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}

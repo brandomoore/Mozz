@@ -21,6 +21,8 @@ import com.thatcube.mozz.continuity.ContinuityOffer
 import com.thatcube.mozz.playback.MozzAudioProcessor
 import com.thatcube.mozz.playback.PlayerController
 import com.thatcube.mozz.relay.RelayService
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,8 +39,14 @@ sealed interface AppState {
     /** Opening the library and re-attaching saved accounts. */
     data object Starting : AppState
 
-    /** The backend chooser: Plex, Jellyfin or a Subsonic server. */
-    data object SignedOut : AppState
+    /**
+     * The backend chooser: Plex, Jellyfin or a Subsonic server.
+     *
+     * [canCancel] when it was reached from Settings to add a second server, in
+     * which case there is a library behind it to go back to. On a first run
+     * there is not, and offering a way out would be offering a dead end.
+     */
+    data class SignedOut(val canCancel: Boolean = false) : AppState
 
     /**
      * Address, name and password for the two backends that take them.
@@ -49,10 +57,15 @@ sealed interface AppState {
     data class EnteringCredentials(
         val kind: BackendKind,
         val message: String? = null,
+        val canCancel: Boolean = false,
     ) : AppState
 
     /** Plex has issued a PIN; the user approves it in a browser. */
-    data class Linking(val link: PlexLink, val waiting: Boolean = true) : AppState
+    data class Linking(
+        val link: PlexLink,
+        val waiting: Boolean = true,
+        val canCancel: Boolean = false,
+    ) : AppState
 
     /**
      * More than one person on this Plex Home, so the choice is theirs.
@@ -227,12 +240,13 @@ class AppViewModel(
             account
         }.onSuccess { account ->
             when {
-                account == null -> _state.value = AppState.SignedOut
+                account == null -> _state.value = AppState.SignedOut()
                 // Attached, but nothing was ever mirrored — a sign-in that broke
                 // partway leaves exactly this state, and showing an empty Home
                 // makes it look like the server has no music.
                 library.counts(account.serverId).tracks == 0 -> sync(account)
                 else -> {
+                    refreshServers()
                     _state.value = AppState.Ready(account)
                     verifyReachable(account)
                     flushFavorites(account.serverId)
@@ -256,13 +270,100 @@ class AppViewModel(
      * Jellyfin and Subsonic need an address and a name first.
      */
     fun chooseBackend(kind: BackendKind) {
-        if (kind == BackendKind.PLEX) beginPlexLink()
-        else _state.value = AppState.EnteringCredentials(kind)
+        val canCancel = (_state.value as? AppState.SignedOut)?.canCancel ?: false
+        if (kind == BackendKind.PLEX) beginPlexLink(canCancel)
+        else _state.value = AppState.EnteringCredentials(kind, canCancel = canCancel)
     }
 
     /** Back out of a credentials form or a Plex link, to the chooser. */
     fun chooseAnotherBackend() {
-        _state.value = AppState.SignedOut
+        val canCancel = when (val current = _state.value) {
+            is AppState.EnteringCredentials -> current.canCancel
+            is AppState.Linking -> current.canCancel
+            else -> false
+        }
+        _state.value = AppState.SignedOut(canCancel)
+    }
+
+    // MARK: Several servers
+
+    /**
+     * The servers this device is signed in to, active first.
+     *
+     * The desktop has held several and switched between them for as long as it
+     * has existed; Android used `savedAccounts().first()` and offered no way to
+     * add a second, so the store could hold more and the app could never reach
+     * them. The catalogue was never the obstacle — it is keyed by server id and
+     * has always held several side by side.
+     */
+    private val _servers = MutableStateFlow<List<ServerAccount>>(emptyList())
+    val servers: StateFlow<List<ServerAccount>> = _servers.asStateFlow()
+
+    fun refreshServers() {
+        _servers.value = server.savedAccounts()
+    }
+
+    /** Sign in to another server without leaving the one already signed in to. */
+    fun addServer() {
+        _state.value = AppState.SignedOut(canCancel = true)
+    }
+
+    /** Back to the library from an add-a-server flow that was not finished. */
+    fun cancelAddServer() {
+        val account = server.savedAccounts().firstOrNull() ?: return
+        cancelPlexPoll()
+        refreshServers()
+        _state.value = AppState.Ready(account)
+    }
+
+    /**
+     * Browse a different server that is already signed in to.
+     *
+     * Not a sign-out and a sign-in: both catalogues stay on the device and both
+     * tokens stay in the keystore, so switching back costs nothing and a Plex
+     * account is never asked to approve a link twice. It goes through the same
+     * attach-and-sync path a launch does rather than a second copy of it.
+     */
+    fun switchTo(account: ServerAccount) = viewModelScope.launch {
+        if (account.serverId == _servers.value.firstOrNull()?.serverId) return@launch
+        _state.value = AppState.Starting
+        server.makeActive(account.serverId)
+        refreshServers()
+        runCatching {
+            server.attach(account)
+            account
+        }.onSuccess { target ->
+            // Nothing mirrored yet means this server was signed in to and never
+            // finished; show the sync rather than an empty library.
+            if (library.counts(target.serverId).tracks == 0) {
+                sync(target)
+            } else {
+                refreshServers()
+                _state.value = AppState.Ready(target)
+                verifyReachable(target)
+                flushFavorites(target.serverId)
+                watchContinuity(target)
+            }
+        }.onFailure { fail("Switching to ${account.serverName}", it) }
+    }
+
+    /**
+     * Sign out of one server, keeping the others.
+     *
+     * Leaving the one being browsed moves to the next; leaving the last one is
+     * the same as signing out of the app.
+     */
+    fun signOutOf(account: ServerAccount) = viewModelScope.launch {
+        val wasActive = account.serverId == server.savedAccounts().firstOrNull()?.serverId
+        server.forgetAccount(account.serverId)
+        refreshServers()
+
+        val next = server.savedAccounts().firstOrNull()
+        when {
+            next == null -> _state.value = AppState.SignedOut()
+            wasActive -> switchTo(next)
+            else -> Unit    // a server we were not on; the library is undisturbed
+        }
     }
 
     /**
@@ -279,9 +380,10 @@ class AppViewModel(
         username: String,
         password: String,
     ) = viewModelScope.launch {
+        val canCancel = (_state.value as? AppState.EnteringCredentials)?.canCancel ?: false
         val address = normalizeBaseUrl(baseUrl)
         if (address.isEmpty()) {
-            _state.value = AppState.EnteringCredentials(kind, "Enter your server's address.")
+            _state.value = AppState.EnteringCredentials(kind, "Enter your server's address.", canCancel)
             return@launch
         }
         _state.value = AppState.Starting
@@ -297,25 +399,48 @@ class AppViewModel(
                 _state.value = AppState.EnteringCredentials(
                     kind,
                     error.message ?: "That server did not accept those details.",
+                    canCancel = canCancel,
                 )
             }
     }
 
     /** Ask Plex for a PIN. The returned link is what the user opens in a browser. */
-    fun beginPlexLink() = viewModelScope.launch {
+    fun beginPlexLink(canCancel: Boolean = false) = viewModelScope.launch {
         _state.value = AppState.Starting
         runCatching { server.beginPlexLink() }
             .onSuccess { link ->
-                _state.value = AppState.Linking(link)
+                _state.value = AppState.Linking(link, canCancel = canCancel)
                 awaitLink(link)
             }
             .onFailure { fail("Asking Plex for a PIN", it) }
     }
 
-    private fun awaitLink(link: PlexLink) = viewModelScope.launch {
-        runCatching { server.awaitPlexAccountToken(link) }
-            .onSuccess { accountToken -> chooseProfileOrComplete(accountToken, link) }
-            .onFailure { fail("Plex link", it, resumeLink = link) }
+    /**
+     * The Plex approval poll, held so it can be stopped.
+     *
+     * It used to run unattended: cancelling the link screen only changed which
+     * screen was showing, and the poll kept going — so an approval that landed
+     * afterwards would drag the user into the profile picker for a server they
+     * had backed out of. Harmless while there was nothing behind the link
+     * screen; not harmless once it can be opened over a library.
+     */
+    private var plexPoll: Job? = null
+
+    private fun awaitLink(link: PlexLink) {
+        plexPoll?.cancel()
+        plexPoll = viewModelScope.launch {
+            runCatching { server.awaitPlexAccountToken(link) }
+                .onSuccess { accountToken -> chooseProfileOrComplete(accountToken, link) }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    fail("Plex link", error, resumeLink = link)
+                }
+        }
+    }
+
+    private fun cancelPlexPoll() {
+        plexPoll?.cancel()
+        plexPoll = null
     }
 
     /**
@@ -406,6 +531,10 @@ class AppViewModel(
         } else {
             runCatching { server.repointAccount(account) }.getOrNull()
         } ?: return@launch
+        // The account's address has been rewritten, so the list showing it is
+        // stale — the Servers page reads that address to tell two of the same
+        // backend apart.
+        refreshServers()
         if (_state.value is AppState.Ready) _state.value = AppState.Ready(repointed)
     }
 
@@ -448,6 +577,7 @@ class AppViewModel(
             server.sync(target.serverId).collect { status -> report(target.serverName, status, target.kind) }
         }.onSuccess {
             _syncProgress.value = null
+            refreshServers()
             _state.value = AppState.Ready(target)
             flushFavorites(target.serverId)
             syncCircle(target)
@@ -596,12 +726,13 @@ class AppViewModel(
         val syncing = _state.value as? AppState.Syncing ?: return
         val account = server.savedAccounts().firstOrNull() ?: return
         if (!syncing.canBrowse) return
+        refreshServers()
         _state.value = AppState.Ready(account)
     }
 
     fun signOut() = viewModelScope.launch {
         server.forgetAllAccounts()
-        _state.value = AppState.SignedOut
+        _state.value = AppState.SignedOut()
     }
 
     /**

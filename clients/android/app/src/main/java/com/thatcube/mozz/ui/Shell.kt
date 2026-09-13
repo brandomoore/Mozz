@@ -103,6 +103,11 @@ fun MozzShell(
     onSignOut: () -> Unit,
     /** A scan running behind the library, for Home to report. */
     syncStatus: SyncStatus? = null,
+    /** Every server signed in to, active first. */
+    servers: List<ServerAccount> = emptyList(),
+    onSwitchServer: (ServerAccount) -> Unit = {},
+    onAddServer: () -> Unit = {},
+    onSignOutOfServer: (ServerAccount) -> Unit = {},
 ) {
     val state by playback.state.collectAsStateWithLifecycle()
     // The same question the library's list/detail scaffold asks, answered the
@@ -345,6 +350,10 @@ fun MozzShell(
                     onResync = onResync,
                     onSignOut = onSignOut,
                     syncStatus = syncStatus,
+                    servers = servers,
+                    onSwitchServer = onSwitchServer,
+                    onAddServer = onAddServer,
+                    onSignOutOfServer = onSignOutOfServer,
                 )
             }
         }
@@ -555,6 +564,10 @@ private fun TabContent(
     onSignOut: () -> Unit,
     /** A scan running behind the library, for Home to report. */
     syncStatus: SyncStatus?,
+    servers: List<ServerAccount>,
+    onSwitchServer: (ServerAccount) -> Unit,
+    onAddServer: () -> Unit,
+    onSignOutOfServer: (ServerAccount) -> Unit,
 ) {
     // Every page below is drawn straight onto the window, with no Material
     // `Surface` above it to say what colour text should be — and Material's
@@ -771,6 +784,15 @@ private fun TabContent(
             title = route.title,
             promise = route.promise,
             nav = nav,
+        )
+
+        Route.SettingsServers -> ServersPage(
+            servers = servers,
+            activeServerId = account.serverId,
+            nav = nav,
+            onSwitch = onSwitchServer,
+            onAdd = onAddServer,
+            onSignOutOf = onSignOutOfServer,
         )
 
         Route.AllPlaylists -> PlaylistsPage(

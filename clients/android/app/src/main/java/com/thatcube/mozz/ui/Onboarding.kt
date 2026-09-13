@@ -178,6 +178,15 @@ private data class Brand(
     }
 }
 
+/**
+ * A backend's mark in a soft circle of its own colour, for anywhere a saved
+ * server is listed rather than chosen.
+ */
+@Composable
+fun BackendChip(kind: BackendKind, size: Dp = 34.dp) {
+    BrandChip(Brand.of(kind), size)
+}
+
 /** A backend's mark in a soft circle of its own colour. iOS's `BrandChip`. */
 @Composable
 private fun BrandChip(brand: Brand, size: Dp = 40.dp) {
@@ -208,9 +217,9 @@ private fun BrandChip(brand: Brand, size: Dp = 40.dp) {
  * matching iOS's picker and the library picker below.
  */
 @Composable
-fun SignInScreen(onChoose: (BackendKind) -> Unit) {
+fun SignInScreen(onChoose: (BackendKind) -> Unit, onCancel: (() -> Unit)? = null) {
     OnboardingScaffold(
-        title = "Connect your server",
+        title = if (onCancel == null) "Connect your server" else "Add a server",
         subtitle = "Mozz plays the music on a server you run. Pick the one you have.",
     ) {
         Surface(
@@ -258,6 +267,13 @@ fun SignInScreen(onChoose: (BackendKind) -> Unit) {
                 }
             }
         }
+
+        // Only when there is something to go back to. On a first run there is
+        // not, and offering a way out would be offering a dead end.
+        if (onCancel != null) {
+            Spacer(Modifier.height(12.dp))
+            TextButton(onClick = onCancel) { Text("Cancel") }
+        }
     }
 }
 
@@ -274,6 +290,7 @@ fun CredentialsScreen(
     message: String?,
     onSubmit: (baseUrl: String, username: String, password: String) -> Unit,
     onBack: () -> Unit,
+    onCancel: (() -> Unit)? = null,
 ) {
     val brand = Brand.of(kind)
     var address by remember(kind) { mutableStateOf("") }
@@ -329,6 +346,9 @@ fun CredentialsScreen(
         }
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = onBack) { Text("Use a different server") }
+        if (onCancel != null) {
+            TextButton(onClick = onCancel) { Text("Cancel") }
+        }
     }
 }
 

@@ -110,6 +110,9 @@ sealed interface Route {
      * its own text so one destination covers every one of them.
      */
     data class SettingsSoon(val title: String, val promise: String) : Route
+
+    /** The servers signed in to, and the way to add or leave one. */
+    data object SettingsServers : Route
 }
 
 /**

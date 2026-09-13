@@ -671,9 +671,28 @@ class MozzServer(
         writeAccounts(emptyList())
     }
 
-    /** Insert or replace one account, leaving the others alone. */
+    /**
+     * Insert or replace one account, leaving the others alone, and make it the
+     * active one.
+     *
+     * First is active — the same convention the desktop's accounts list and the
+     * iOS session store use. It used to append, which was invisible while only
+     * one account could exist and wrong the moment a second could: signing in to
+     * a new server would save it at the back and the app would carry on using
+     * the old one, with no way to tell why.
+     */
     fun saveAccount(account: ServerAccount) {
-        writeAccounts(savedAccounts().filterNot { it.serverId == account.serverId } + account)
+        writeAccounts(listOf(account) + savedAccounts().filterNot { it.serverId == account.serverId })
+    }
+
+    /**
+     * Make an already-saved account the active one. No network, no token
+     * exchange: this is only the ordering, and [attach] is what brings it up.
+     */
+    fun makeActive(serverId: String) {
+        val accounts = savedAccounts()
+        val chosen = accounts.firstOrNull { it.serverId == serverId } ?: return
+        writeAccounts(listOf(chosen) + accounts.filterNot { it.serverId == serverId })
     }
 
     private fun persist(
