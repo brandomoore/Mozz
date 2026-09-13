@@ -28,6 +28,8 @@ import com.thatcube.mozz.ui.LinkingScreen
 import com.thatcube.mozz.ui.ProfilePickerScreen
 import com.thatcube.mozz.ui.SignInScreen
 import com.thatcube.mozz.ui.StartingScreen
+import com.thatcube.mozz.core.SyncStatus
+import com.thatcube.mozz.ui.CredentialsScreen
 import com.thatcube.mozz.ui.SyncingScreen
 import com.thatcube.mozz.ui.theme.LocalMozzSettings
 import com.thatcube.mozz.ui.theme.MozzTheme
@@ -102,22 +104,35 @@ class MainActivity : ComponentActivity() {
                 CompositionLocalProvider(LocalMozzSettings provides settings) {
                     val state by viewModel.state.collectAsStateWithLifecycle()
                     val continuityOffer by viewModel.continuityOffer.collectAsStateWithLifecycle()
-                    Root(state, continuityOffer)
+                    val syncProgress by viewModel.syncProgress.collectAsStateWithLifecycle()
+                    Root(state, continuityOffer, syncProgress)
                 }
             }
         }
     }
 
     @Composable
-    private fun Root(state: AppState, continuityOffer: ContinuityOffer?) {
+    private fun Root(state: AppState, continuityOffer: ContinuityOffer?, syncProgress: SyncStatus?) {
         when (state) {
             AppState.Starting -> StartingScreen()
 
-            AppState.SignedOut -> SignInScreen(onConnectPlex = viewModel::beginPlexLink)
+            AppState.SignedOut -> SignInScreen(onChoose = viewModel::chooseBackend)
+
+            is AppState.EnteringCredentials -> CredentialsScreen(
+                kind = state.kind,
+                message = state.message,
+                onSubmit = { url, user, password ->
+                    viewModel.connectCredentials(state.kind, url, user, password)
+                },
+                onBack = viewModel::chooseAnotherBackend,
+            )
 
             is AppState.Linking -> LinkingScreen(
                 onOpenBrowser = { openLink(state.link.linkUrl) },
-                onCancel = viewModel::signOut,
+                // Back to the chooser, not signed out: cancelling a Plex link is
+                // "not that one", and dropping the user on a dead screen made it
+                // read as an error.
+                onCancel = viewModel::chooseAnotherBackend,
             )
 
             is AppState.ChoosingProfile -> ProfilePickerScreen(
@@ -138,7 +153,13 @@ class MainActivity : ComponentActivity() {
                 onSelect = { viewModel.selectLibrary(state.account, it.id) },
             )
 
-            is AppState.Syncing -> SyncingScreen(state.serverName, state.status)
+            is AppState.Syncing -> SyncingScreen(
+                serverName = state.serverName,
+                status = state.status,
+                canBrowse = state.canBrowse,
+                kind = state.kind,
+                onBrowseNow = viewModel::browseWhileSyncing,
+            )
 
             is AppState.Ready -> MozzShell(
                 account = state.account,
@@ -157,6 +178,7 @@ class MainActivity : ComponentActivity() {
                 onSoundChanged = { viewModel.setSound(it) },
                 onResync = viewModel::resync,
                 onSignOut = viewModel::signOut,
+                syncStatus = syncProgress,
             )
 
             is AppState.Failed -> FailedScreen(

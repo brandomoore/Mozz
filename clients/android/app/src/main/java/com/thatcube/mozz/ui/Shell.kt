@@ -53,6 +53,7 @@ import com.thatcube.mozz.core.MozzLibrary
 import com.thatcube.mozz.core.ServerCapabilities
 import com.thatcube.mozz.core.MozzServer
 import com.thatcube.mozz.core.ServerAccount
+import com.thatcube.mozz.core.SyncStatus
 import com.thatcube.mozz.playback.PlayerController
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -100,6 +101,8 @@ fun MozzShell(
     onSoundChanged: suspend (PlaybackSettings) -> Unit = {},
     onResync: () -> Unit,
     onSignOut: () -> Unit,
+    /** A scan running behind the library, for Home to report. */
+    syncStatus: SyncStatus? = null,
 ) {
     val state by playback.state.collectAsStateWithLifecycle()
     // The same question the library's list/detail scaffold asks, answered the
@@ -341,6 +344,7 @@ fun MozzShell(
                     capabilities = capabilities,
                     onResync = onResync,
                     onSignOut = onSignOut,
+                    syncStatus = syncStatus,
                 )
             }
         }
@@ -549,6 +553,8 @@ private fun TabContent(
     capabilities: ServerCapabilities?,
     onResync: () -> Unit,
     onSignOut: () -> Unit,
+    /** A scan running behind the library, for Home to report. */
+    syncStatus: SyncStatus?,
 ) {
     // Every page below is drawn straight onto the window, with no Material
     // `Surface` above it to say what colour text should be — and Material's
@@ -584,6 +590,7 @@ private fun TabContent(
                 continuityOffer = continuityOffer,
                 onResumeContinuity = onResumeContinuity,
                 onDismissContinuity = onDismissContinuity,
+                syncStatus = syncStatus,
             )
             AppTab.LIBRARY -> LibraryRoot(
                 account = account,

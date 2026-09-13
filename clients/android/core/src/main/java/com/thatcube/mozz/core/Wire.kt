@@ -384,22 +384,72 @@ data class SonicProgress(
     val fraction: Float get() = if (total > 0) analyzed.toFloat() / total else 0f
 }
 
+/**
+ * One line of the sync's own account of itself: artists, then albums, then
+ * songs, then playlists, each with a count and a state.
+ *
+ * The core has always sent these; Android was the one client that dropped them
+ * on the floor and drew a single unlabelled bar instead, which is the same
+ * picture for "three minutes in, songs are nearly done" as for "stuck". iOS and
+ * the desktop both draw the checklist, so this is parity, not a new idea.
+ */
+@Serializable
+data class SyncPhaseDetail(
+    val phase: String,
+    val label: String,
+    val state: String,
+    val synced: Int = 0,
+    val total: Int? = null,
+    val isComplete: Boolean = false,
+) {
+    val isSyncing: Boolean get() = state == "syncing"
+    val isPending: Boolean get() = state == "pending"
+
+    /** "3,712 / 20,004", or just the count where the total is not yet known. */
+    val countText: String
+        get() {
+            val done = "%,d".format(synced)
+            val all = total?.takeIf { it > 0 }?.let { "%,d".format(it) }
+            return if (all != null) "$done / $all" else done
+        }
+}
+
 @Serializable
 data class SyncStatus(
     val running: Boolean = false,
     val finished: Boolean = false,
     val phase: String? = null,
+    /** The core's own name for the running phase, e.g. "Songs". */
+    val phaseLabel: String? = null,
     val itemsSynced: Int = 0,
     val total: Int? = null,
+    val details: List<SyncPhaseDetail> = emptyList(),
     val error: String? = null,
     val artists: Int? = null,
     val albums: Int? = null,
     val tracks: Int? = null,
     val playlists: Int? = null,
 ) {
+    /**
+     * Whether there is enough of a catalogue to browse while the rest arrives.
+     *
+     * Matches iOS's `canEnterEarly`: once songs have started landing there is
+     * something to look at, and holding someone on a progress screen for the
+     * several minutes a large Jellyfin library takes is a worse answer than
+     * letting them in.
+     */
+    val hasSomethingToShow: Boolean
+        get() = running && (tracks ?: 0) > 0
+
+    val fraction: Float?
+        get() = total?.takeIf { it > 0 }?.let { (itemsSynced.toFloat() / it).coerceIn(0f, 1f) }
+
     /** Short label for a progress row, e.g. "Songs 3,712 / 20,004". */
     fun describe(): String {
-        val label = when (phase) {
+        // The core names its own phases, and a second mapping here is a second
+        // thing to keep in step. Kept only as the fallback for a core that sent
+        // no label, which is what every build before this one did.
+        val label = phaseLabel ?: when (phase) {
             "capabilities" -> "Connecting"
             "artists" -> "Artists"
             "albums" -> "Albums"

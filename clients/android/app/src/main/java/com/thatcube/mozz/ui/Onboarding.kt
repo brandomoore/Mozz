@@ -1,5 +1,22 @@
 package com.thatcube.mozz.ui
 
+import androidx.annotation.DrawableRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Icon
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
+import com.thatcube.mozz.core.BackendKind
+import com.thatcube.mozz.core.SyncPhaseRow
+import com.thatcube.mozz.core.SyncProgressSmoother
+import kotlinx.coroutines.delay
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.runtime.setValue
@@ -117,19 +134,201 @@ private fun OnboardingScaffold(
     }
 }
 
+/**
+ * Identity for a backend, shared by the chooser row and the credentials form.
+ *
+ * The mirror of iOS's `BrandStyle`, down to the tints — the products are
+ * recognised by their colours, and three identical grey glyphs make the choice
+ * harder than it needs to be. The marks come from `tools/icons/brand-svg/`,
+ * which is the same source iOS reads.
+ */
+private data class Brand(
+    val kind: BackendKind,
+    @DrawableRes val logo: Int,
+    /** What the row says. Usually the product's name. */
+    val pickerName: String,
+    val tint: Color,
+    /** One line under the form's heading, or null where the heading says enough. */
+    val hint: String?,
+) {
+    companion object {
+        val plex = Brand(
+            BackendKind.PLEX, R.drawable.brand_plex, "Plex",
+            Color(0xFFE5A00D),
+            "You approve the connection in your browser. No password is typed here.",
+        )
+        val jellyfin = Brand(
+            BackendKind.JELLYFIN, R.drawable.brand_jellyfin, "Jellyfin",
+            Color(0xFF8761F2),
+            "Your Jellyfin address, and the name and password you sign in with there.",
+        )
+
+        // Navidrome's mark for a Subsonic row: the protocol has no mark of its
+        // own, and Navidrome is what nearly everyone speaking it is running.
+        // The label carries the accuracy the logo cannot.
+        val subsonic = Brand(
+            BackendKind.SUBSONIC, R.drawable.brand_navidrome, "Navidrome (Subsonic)",
+            Color(0xFF2E86D6),
+            "Any Subsonic or OpenSubsonic server — Navidrome, Gonic, Ampache, LMS.",
+        )
+
+        val all = listOf(jellyfin, plex, subsonic)
+
+        fun of(kind: BackendKind) = all.first { it.kind == kind }
+    }
+}
+
+/** A backend's mark in a soft circle of its own colour. iOS's `BrandChip`. */
 @Composable
-fun SignInScreen(onConnectPlex: () -> Unit) {
+private fun BrandChip(brand: Brand, size: Dp = 40.dp) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .background(brand.tint.copy(alpha = 0.18f), CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            painterResource(brand.logo),
+            contentDescription = null,
+            tint = brand.tint,
+            // Plex's chevron occupies about half of its 24x24 canvas where the
+            // other two very nearly fill theirs, so an equal inset renders it
+            // visibly smaller. Same correction iOS makes.
+            modifier = Modifier.size(size * if (brand.kind == BackendKind.PLEX) 0.68f else 0.56f),
+        )
+    }
+}
+
+/**
+ * The backend chooser.
+ *
+ * Android offered Plex and only Plex until now, while the shared core has
+ * spoken Jellyfin and Subsonic for as long as it has spoken Plex and both
+ * other clients offered all three. One grouped card with hairline dividers,
+ * matching iOS's picker and the library picker below.
+ */
+@Composable
+fun SignInScreen(onChoose: (BackendKind) -> Unit) {
     OnboardingScaffold(
         title = "Connect your server",
-        subtitle = "Mozz plays the music on your own Plex server. " +
-            "You approve the connection in your browser — no password is typed here.",
+        subtitle = "Mozz plays the music on a server you run. Pick the one you have.",
     ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = MaterialTheme.shapes.large,
+            border = if (LocalMozzBlackout.current) {
+                BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            } else {
+                null
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column {
+                Brand.all.forEachIndexed { index, brand ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onChoose(brand.kind) }
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        BrandChip(brand)
+                        Spacer(Modifier.width(14.dp))
+                        Text(
+                            brand.pickerName,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Icon(
+                            painterResource(R.drawable.ic_chevron_right),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    if (index != Brand.all.lastIndex) {
+                        // Inset to clear the chip, so the rules line up with the
+                        // row text rather than cutting under the logos.
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                            modifier = Modifier.padding(start = 16.dp + 40.dp + 14.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Address, name and password, for the two backends that take them.
+ *
+ * Password is optional on purpose: a Subsonic server may be set up without one,
+ * and requiring it would lock those users out of an app that can talk to their
+ * server perfectly well.
+ */
+@Composable
+fun CredentialsScreen(
+    kind: BackendKind,
+    message: String?,
+    onSubmit: (baseUrl: String, username: String, password: String) -> Unit,
+    onBack: () -> Unit,
+) {
+    val brand = Brand.of(kind)
+    var address by remember(kind) { mutableStateOf("") }
+    var username by remember(kind) { mutableStateOf("") }
+    var password by remember(kind) { mutableStateOf("") }
+
+    OnboardingScaffold(title = "Sign in to ${brand.kind.display}", subtitle = brand.hint) {
+        OutlinedTextField(
+            value = address,
+            onValueChange = { address = it },
+            label = { Text("Server address") },
+            placeholder = { Text(if (kind == BackendKind.JELLYFIN) "192.168.1.8:8096" else "music.example.com") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = username,
+            onValueChange = { username = it },
+            label = { Text("Username") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it },
+            label = { Text("Password") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        if (message != null) {
+            Spacer(Modifier.height(14.dp))
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
+            )
+        }
+
+        Spacer(Modifier.height(20.dp))
         Button(
-            onClick = onConnectPlex,
+            onClick = { onSubmit(address, username, password) },
+            enabled = address.isNotBlank() && username.isNotBlank(),
             modifier = Modifier.fillMaxWidth().height(52.dp),
         ) {
-            Text("Connect Plex", style = MaterialTheme.typography.labelLarge)
+            Text("Sign in", style = MaterialTheme.typography.labelLarge)
         }
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = onBack) { Text("Use a different server") }
     }
 }
 
@@ -304,25 +503,155 @@ fun ProfilePickerScreen(
     }
 }
 
+/**
+ * The scan, with its own account of itself.
+ *
+ * This was one unlabelled bar and a line of text — the same picture for "three
+ * minutes in, songs nearly done" as for "stuck on artists". The core has always
+ * sent a per-phase breakdown and both other clients have always drawn it; this
+ * is Android catching up.
+ *
+ * The counters are paced by [SyncProgressSmoother] rather than bound straight
+ * to the reports, which arrive a page at a time and so would sit still and then
+ * leap. Same constants as iOS and the desktop, so the same library counts at
+ * the same speed on every device.
+ */
 @Composable
-fun SyncingScreen(serverName: String, status: SyncStatus?) {
+fun SyncingScreen(
+    serverName: String,
+    status: SyncStatus?,
+    canBrowse: Boolean = false,
+    kind: BackendKind? = null,
+    onBrowseNow: () -> Unit = {},
+) {
     OnboardingScaffold(
         title = "Mirroring $serverName",
-        subtitle = "Your catalogue is copied to this device, so browsing and " +
-            "searching stay instant even when the server is not.",
+        // What to expect, which depends on the backend: Plex serves its
+        // catalogue fast, a self-hosted Jellyfin on a large library can take
+        // several minutes, and Subsonic is walked album by album. Setting that
+        // expectation up front is the difference between "slow" and "broken".
+        // iOS has said this since it shipped.
+        subtitle = when (kind) {
+            BackendKind.PLEX ->
+                "Your catalogue is copied to this device — usually quick with Plex — so browsing " +
+                    "and searching stay instant even when the server is not."
+            BackendKind.JELLYFIN ->
+                "Your catalogue is copied to this device, so browsing and searching stay instant " +
+                    "even when the server is not. A large Jellyfin library can take a few minutes."
+            BackendKind.SUBSONIC ->
+                "Your catalogue is copied to this device, so browsing and searching stay instant " +
+                    "even when the server is not. Mozz walks your albums to sync safely, so a " +
+                    "large library takes a few minutes."
+            null ->
+                "Your catalogue is copied to this device, so browsing and searching stay instant " +
+                    "even when the server is not."
+        },
     ) {
-        val total = status?.total?.takeIf { it > 0 }
-        val done = status?.itemsSynced ?: 0
-        if (total != null) {
-            LinearProgressIndicator(
-                progress = { (done.toFloat() / total).coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
-            )
+        val smoother = remember { SyncProgressSmoother() }
+
+        // Re-paced on every report, and again on a timer between them: the
+        // easing has to keep moving while nothing new is arriving, which is
+        // exactly the stretch it exists for.
+        var rows by remember { mutableStateOf(emptyList<SyncPhaseRow>()) }
+        LaunchedEffect(status) { rows = smoother.update(status) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(250)
+                rows = smoother.update(status)
+            }
+        }
+
+        val fraction = status?.fraction
+        if (fraction != null) {
+            LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
         } else {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
-        Spacer(Modifier.height(14.dp))
-        Text(status?.describe() ?: "Connecting", style = quietBody)
+
+        Spacer(Modifier.height(16.dp))
+        if (rows.isEmpty()) {
+            Text(status?.describe() ?: "Connecting", style = quietBody)
+        } else {
+            SyncBreakdown(rows)
+        }
+
+        if (canBrowse) {
+            Spacer(Modifier.height(24.dp))
+            Button(onClick = onBrowseNow, modifier = Modifier.fillMaxWidth().height(52.dp)) {
+                Text("Browse now", style = MaterialTheme.typography.labelLarge)
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "The rest keeps arriving in the background.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+/**
+ * Artists, albums, songs, playlists — each with its state and its count.
+ *
+ * `.contain` rather than one merged label, matching iOS: every row speaks its
+ * own state ("Albums, done"), and flattening them into a summary loses exactly
+ * the detail the checklist exists to give.
+ */
+@Composable
+private fun SyncBreakdown(rows: List<SyncPhaseRow>) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = false) { },
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        rows.forEach { row ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics(mergeDescendants = true) {
+                        contentDescription = "${row.label}, ${row.state}. ${row.countText}"
+                    },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(modifier = Modifier.size(18.dp), contentAlignment = Alignment.Center) {
+                    when {
+                        row.isDone -> Icon(
+                            painterResource(R.drawable.ic_check),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        row.isSyncing -> CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 1.5.dp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        // A pending phase draws nothing. A greyed spinner on a
+                        // row that has not started would read as four things
+                        // running at once when only one ever is.
+                        else -> Unit
+                    }
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    row.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (row.isDone || row.isSyncing) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    row.countText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
@@ -364,6 +693,70 @@ fun StartingScreen() {
                     strokeWidth = 2.dp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+    }
+}
+
+/**
+ * A running scan, reported from inside the library rather than in front of it.
+ *
+ * The counterpart to [SyncingScreen], and the same checklist — but this one
+ * sits in Home's scroll content, so it can cover nothing and scrolls away with
+ * the rest of the page. It is what makes a resync background work: the library
+ * stays where it is and this says what is happening to it.
+ *
+ * Mirrors iOS's `SyncStatusBar`, which has carried the same breakdown, the same
+ * pacing and the same placement since it shipped.
+ */
+@Composable
+fun SyncStatusCard(status: SyncStatus, modifier: Modifier = Modifier) {
+    val smoother = remember { SyncProgressSmoother() }
+    var rows by remember { mutableStateOf(emptyList<SyncPhaseRow>()) }
+    LaunchedEffect(status) { rows = smoother.update(status) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(250)
+            rows = smoother.update(status)
+        }
+    }
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.large,
+        border = if (LocalMozzBlackout.current) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        } else {
+            null
+        },
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 13.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "Syncing your library",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            val fraction = status.fraction
+            Spacer(Modifier.height(11.dp))
+            if (fraction != null) {
+                LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+            } else {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            Spacer(Modifier.height(12.dp))
+            if (rows.isEmpty()) {
+                Text(status.describe(), style = quietBody)
+            } else {
+                SyncBreakdown(rows)
             }
         }
     }

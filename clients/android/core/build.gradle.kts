@@ -63,6 +63,11 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
     api(libs.kotlinx.serialization.json)
+    // Plain JVM tests, no device. The sync pacing and the wire shapes are
+    // ordinary Kotlin with no Android in them, and making them wait on an
+    // emulator is how a check that should run on every push ends up running
+    // on none of them.
+    testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestRuntimeOnly(libs.androidx.test.runner)
 }

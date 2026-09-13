@@ -56,6 +56,7 @@ import com.thatcube.mozz.core.MozzLibrary
 import com.thatcube.mozz.core.MozzServer
 import com.thatcube.mozz.core.Playlist
 import com.thatcube.mozz.core.ServerAccount
+import com.thatcube.mozz.core.SyncStatus
 import com.thatcube.mozz.core.Track
 import com.thatcube.mozz.playback.PlayerController
 import com.thatcube.mozz.ui.theme.mozzSurface
@@ -83,6 +84,8 @@ fun HomeRoot(
     continuityOffer: ContinuityOffer? = null,
     onResumeContinuity: () -> Unit = {},
     onDismissContinuity: () -> Unit = {},
+    /** A scan running behind the library, when one is. */
+    syncStatus: SyncStatus? = null,
 ) {
     val context = LocalContext.current
     var mixes by remember { mutableStateOf<List<HomeMix>>(emptyList()) }
@@ -135,6 +138,14 @@ fun HomeRoot(
             item(key = "header") {
                 TabHeader("Home", inset = inset) {
                     SettingsButton { nav.open(Route.Settings) }
+                }
+            }
+
+            // Above the offer and the shelves: it is the reason the shelves may
+            // be short, so reading it first explains them.
+            syncStatus?.let { status ->
+                item(key = "sync") {
+                    SyncStatusCard(status, modifier = Modifier.padding(horizontal = inset))
                 }
             }
 

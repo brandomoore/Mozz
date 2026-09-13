@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.thatcube.mozz.core.BackendKind
 import com.thatcube.mozz.core.MusicLibrary
 import com.thatcube.mozz.core.MozzLibrary
 import com.thatcube.mozz.core.MozzPlaybackSettings
@@ -28,15 +29,27 @@ import kotlinx.coroutines.launch
 /**
  * Where the app is in getting someone to their music.
  *
- * One linear path, because that is what it is: no account → link Plex → pick a
- * library if there is a choice → mirror the catalogue → listen. Each state
- * carries what its screen needs and nothing else.
+ * One linear path, because that is what it is: no account → choose a backend →
+ * prove who you are → pick a library if there is a choice → mirror the
+ * catalogue → listen. Each state carries what its screen needs and nothing else.
  */
 sealed interface AppState {
     /** Opening the library and re-attaching saved accounts. */
     data object Starting : AppState
 
+    /** The backend chooser: Plex, Jellyfin or a Subsonic server. */
     data object SignedOut : AppState
+
+    /**
+     * Address, name and password for the two backends that take them.
+     *
+     * Plex never reaches here — it has no password to type, which is the whole
+     * point of its PIN flow — so this state cannot hold [BackendKind.PLEX].
+     */
+    data class EnteringCredentials(
+        val kind: BackendKind,
+        val message: String? = null,
+    ) : AppState
 
     /** Plex has issued a PIN; the user approves it in a browser. */
     data class Linking(val link: PlexLink, val waiting: Boolean = true) : AppState
@@ -60,7 +73,22 @@ sealed interface AppState {
         val libraries: List<MusicLibrary>,
     ) : AppState
 
-    data class Syncing(val serverName: String, val status: SyncStatus?) : AppState
+    /**
+     * Mirroring the catalogue.
+     *
+     * [canBrowse] is what lets someone in before it finishes. A large Jellyfin
+     * library takes minutes, and holding a person on a progress bar for that
+     * long — when there are already thousands of songs on the device — is a
+     * worse answer than letting them look around while the rest arrives. iOS
+     * has offered this since it shipped; Android blocked until now.
+     */
+    data class Syncing(
+        val serverName: String,
+        val status: SyncStatus?,
+        val canBrowse: Boolean = false,
+        /** Which backend, so the screen can say what to expect of it. */
+        val kind: BackendKind? = null,
+    ) : AppState
 
     data class Ready(val account: ServerAccount) : AppState
 
@@ -221,6 +249,58 @@ class AppViewModel(
         }
     }
 
+    /**
+     * The chooser's answer.
+     *
+     * Plex goes straight to its PIN flow because there is nothing to type;
+     * Jellyfin and Subsonic need an address and a name first.
+     */
+    fun chooseBackend(kind: BackendKind) {
+        if (kind == BackendKind.PLEX) beginPlexLink()
+        else _state.value = AppState.EnteringCredentials(kind)
+    }
+
+    /** Back out of a credentials form or a Plex link, to the chooser. */
+    fun chooseAnotherBackend() {
+        _state.value = AppState.SignedOut
+    }
+
+    /**
+     * Sign in to a Jellyfin or Subsonic server.
+     *
+     * The address is normalised here rather than in the form: people type
+     * "192.168.1.8:8096" and "navidrome.example.com/", and a scheme-less or
+     * slash-trailing URL is a connection failure with a message about the URL
+     * being wrong, which reads as Mozz not supporting their server.
+     */
+    fun connectCredentials(
+        kind: BackendKind,
+        baseUrl: String,
+        username: String,
+        password: String,
+    ) = viewModelScope.launch {
+        val address = normalizeBaseUrl(baseUrl)
+        if (address.isEmpty()) {
+            _state.value = AppState.EnteringCredentials(kind, "Enter your server's address.")
+            return@launch
+        }
+        _state.value = AppState.Starting
+        runCatching {
+            server.connect(kind, address, username, password.takeIf { it.isNotEmpty() })
+        }
+            .onSuccess { account -> chooseLibraryOrSync(account) }
+            // Straight back to the form, with the reason, rather than to the
+            // generic failure screen: a typo'd address or password is something
+            // to correct in place, not something to start over from.
+            .onFailure { error ->
+                Log.e(TAG, "Signing in to ${kind.display} failed", error)
+                _state.value = AppState.EnteringCredentials(
+                    kind,
+                    error.message ?: "That server did not accept those details.",
+                )
+            }
+    }
+
     /** Ask Plex for a PIN. The returned link is what the user opens in a browser. */
     fun beginPlexLink() = viewModelScope.launch {
         _state.value = AppState.Starting
@@ -329,8 +409,25 @@ class AppViewModel(
         if (_state.value is AppState.Ready) _state.value = AppState.Ready(repointed)
     }
 
+    /**
+     * What the running sync is doing, for the library to show while it runs.
+     *
+     * Separate from [AppState] because a sync is not always a screen. The first
+     * one is — there is nothing to browse yet — but a resync of a library that
+     * is already on the device is background work, and throwing the user back
+     * to a full-page progress bar for it took the app away to report on
+     * something they could have watched from inside it. iOS has shown this as a
+     * card on Home since it shipped.
+     */
+    private val _syncProgress = MutableStateFlow<SyncStatus?>(null)
+    val syncProgress: StateFlow<SyncStatus?> = _syncProgress.asStateFlow()
+
     private fun sync(account: ServerAccount) = viewModelScope.launch {
-        _state.value = AppState.Syncing(account.serverName, null)
+        // Only take over the screen when there is nothing behind it to take
+        // over from. A resync from Settings publishes progress and leaves the
+        // library where it is.
+        val inBackground = _state.value is AppState.Ready
+        if (!inBackground) _state.value = AppState.Syncing(account.serverName, null, kind = account.kind)
         var target = account
         runCatching {
             // Not a plain attach. A Plex account carries no library section
@@ -340,9 +437,7 @@ class AppViewModel(
             // onboarding was interrupted reaches here without ever having been
             // asked, and would then be permanently unsyncable.
             target = server.attachForSync(target)
-            server.sync(target.serverId).collect { status ->
-                _state.value = AppState.Syncing(target.serverName, status)
-            }
+            server.sync(target.serverId).collect { status -> report(target.serverName, status, target.kind) }
         }.recoverCatching { error ->
             // A sync that fails against a dead address fails the same way every
             // time it is retried, because every retry goes to the same address.
@@ -350,17 +445,48 @@ class AppViewModel(
             // means there was nothing better to move to, and the original error
             // is the honest one to report.
             target = server.attachForSync(server.repointAccount(target) ?: throw error)
-            server.sync(target.serverId).collect { status ->
-                _state.value = AppState.Syncing(target.serverName, status)
-            }
+            server.sync(target.serverId).collect { status -> report(target.serverName, status, target.kind) }
         }.onSuccess {
+            _syncProgress.value = null
             _state.value = AppState.Ready(target)
             flushFavorites(target.serverId)
             syncCircle(target)
             watchContinuity(target)
             adoptPlaybackSettings()
         }
-            .onFailure { fail("Sync", it) }
+            .onFailure { error ->
+                _syncProgress.value = null
+                // A resync that fails has a library behind it, and replacing
+                // that with an error page loses more than the error is worth.
+                // Failing loudly is right only when there is nothing to lose.
+                if (inBackground) Log.e(TAG, "Resync failed", error) else fail("Sync", error)
+            }
+    }
+
+    /**
+     * Post a sync update — unless the user has already gone in to browse, in
+     * which case the progress screen is behind them and putting it back would
+     * be the app taking the library away again.
+     */
+    private fun report(serverName: String, status: SyncStatus, kind: BackendKind?) {
+        _syncProgress.value = status.takeIf { it.running }
+        // The progress screen is only updated while it is the screen. Once the
+        // user has gone in to browse, putting it back would be the app taking
+        // the library away again.
+        if (_state.value !is AppState.Syncing) return
+        _state.value = AppState.Syncing(serverName, status, status.hasSomethingToShow, kind)
+    }
+
+    /**
+     * Give a typed address the shape a URL needs.
+     *
+     * No scheme means http, because a self-hosted server on a home network
+     * usually has no certificate; someone who needs https types it.
+     */
+    internal fun normalizeBaseUrl(raw: String): String {
+        val trimmed = raw.trim().trimEnd('/')
+        if (trimmed.isEmpty()) return ""
+        return if (trimmed.contains("://")) trimmed else "http://$trimmed"
     }
 
     /**
@@ -456,6 +582,21 @@ class AppViewModel(
     /** Re-mirror the catalogue for the account already signed in. */
     fun resync() {
         (state.value as? AppState.Ready)?.let { sync(it.account) }
+    }
+
+    /**
+     * Go to the library while the sync is still running.
+     *
+     * Nothing is cancelled: the collector in [sync] keeps running and will move
+     * to Ready as usual when it finishes, so this is only about which screen is
+     * in front. The guard is that it only applies while syncing — a stray tap
+     * arriving after completion must not push a stale account into Ready.
+     */
+    fun browseWhileSyncing() {
+        val syncing = _state.value as? AppState.Syncing ?: return
+        val account = server.savedAccounts().firstOrNull() ?: return
+        if (!syncing.canBrowse) return
+        _state.value = AppState.Ready(account)
     }
 
     fun signOut() = viewModelScope.launch {
