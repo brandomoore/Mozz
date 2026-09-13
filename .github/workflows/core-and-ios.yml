@@ -116,6 +116,13 @@ jobs:
       - name: No shell lost a capability
         run: tools/check-parity.sh --check
 
+      # One level up from the check above, and a gap it cannot see: Android
+      # reached the `connect` command, which takes a BackendKind, and still
+      # offered exactly one button — "Connect Plex" — so Jellyfin and Subsonic
+      # were unreachable from the app while every check here stayed green.
+      - name: Every app offers every backend the core speaks
+        run: tools/check-backends.sh --check
+
       # The Android shell reaches the core through a JSON envelope, so the
       # command name is a string neither compiler checks. Three had drifted
       # apart unnoticed - the like button, Plex re-resolution, and the
