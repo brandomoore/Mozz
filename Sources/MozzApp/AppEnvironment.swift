@@ -1147,6 +1147,12 @@ public final class AppEnvironment: ObservableObject {
         let username = parts[2]
         let password = parts.count > 3 ? parts[3] : ""
 
+        // Already signed in to this one: adding it again would be a second
+        // activation of the server already on screen. Skipping instead means the
+        // variable can be left set across launches, and naming a DIFFERENT
+        // server adds it — which is how holding two of them gets exercised.
+        if SessionPersistence.all(credentials).contains(where: { $0.baseURL == url }) { return }
+
         do {
             let session: AuthenticatedSession
             switch kind {
@@ -1166,6 +1172,9 @@ public final class AppEnvironment: ObservableObject {
                 return
             }
             activate(session: session)
+            // `activate` hands off to an environment-owned task; the next spec
+            // must not race it into a half-built state.
+            while isSettingUp { try? await Task.sleep(nanoseconds: 200_000_000) }
         } catch {
             screenshotLog.error("MOZZ_AUTOSIGNIN failed: \(error)")
         }
@@ -1195,8 +1204,20 @@ public final class AppEnvironment: ObservableObject {
             await runSyncProbe()
             return
         }
-        if let spec = env["MOZZ_AUTOSIGNIN"], active == nil {
-            await signInForVerification(spec)
+        if let specs = env["MOZZ_AUTOSIGNIN"] {
+            // Semicolon-separated, so one launch can establish more than one
+            // server — which is the only way to see the Servers screen holding
+            // two of them without typing into a sign-in form.
+            for spec in specs.split(separator: ";") {
+                await signInForVerification(String(spec))
+            }
+            // Say what the store ended up holding. The simulator's Keychain has
+            // no stable owner for an unsigned build, so "did the session store
+            // actually keep these" is a real question with a non-obvious answer,
+            // and reading it out of the log beats inferring it from a screen.
+            let held = SessionPersistence.all(credentials)
+            screenshotLog.notice(
+                "MOZZ_AUTOSIGNIN: store holds \(held.count) server(s): \(held.map(\.serverName).joined(separator: ", "))")
             return
         }
         if env["MOZZ_FORCESYNC"] == "1", active != nil {
