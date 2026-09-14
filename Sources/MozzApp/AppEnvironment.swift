@@ -175,8 +175,31 @@ public final class AppEnvironment: ObservableObject {
 
     /// Re-read the store. Called wherever the set of servers can have changed —
     /// the store is the record, this is only the copy the UI binds to.
+    ///
+    /// A store that reads back empty while a server is plainly active is not
+    /// "signed in to nothing", and a Servers screen with no rows under a library
+    /// full of music is a worse lie than a row with a little less detail. It
+    /// happens: an unsigned simulator build has no stable Keychain owner, and a
+    /// device can refuse a read while it is locked. So the active connection
+    /// stands in for its own row when the store cannot produce one.
     func refreshServers() {
-        servers = SessionPersistence.all(credentials)
+        let stored = SessionPersistence.all(credentials)
+        if stored.isEmpty, let connection = active?.connection {
+            servers = [StoredSession(
+                kind: connection.kind,
+                baseURL: connection.baseURL,
+                // Deliberately empty. This row exists to be shown, not to be
+                // signed in with — the real credential is the one already
+                // driving the session, and nothing here ever writes this back.
+                token: "",
+                userID: connection.userID,
+                serverName: connection.name,
+                clientIdentifier: connection.clientIdentifier,
+                musicSectionID: nil,
+                serverId: connection.id)]
+            return
+        }
+        servers = stored
     }
 
     /// Forget a session that failed to finish setting up.
@@ -1098,6 +1121,56 @@ public final class AppEnvironment: ObservableObject {
         #endif
     }
 
+    /// Sign in to a server named by the environment, for simulator verification.
+    ///
+    /// The simulator has no tap injection in this toolchain, so a screen that
+    /// needs an address and a password typed into it cannot be reached at all —
+    /// which is how the Jellyfin and Subsonic sign-ins stayed unverified against
+    /// a live server while Plex was exercised constantly. This is the same seam
+    /// `MOZZ_AUTODEMO` uses, pointed at a real exchange instead of a synthetic
+    /// catalogue: it goes through the ordinary authenticator and the ordinary
+    /// activation, so what it proves is the real path.
+    ///
+    ///     MOZZ_AUTOSIGNIN="jellyfin,http://127.0.0.1:8096,listener,hunter2"
+    ///
+    /// Plex is deliberately unsupported here — its flow is an out-of-band
+    /// approval, and there is no password to pass.
+    private func signInForVerification(_ spec: String) async {
+        let parts = spec.split(separator: ",", maxSplits: 3).map(String.init)
+        guard parts.count >= 3,
+              let kind = BackendKind(rawValue: parts[0]),
+              kind != .plex,
+              let url = URL(string: parts[1]) else {
+            screenshotLog.error("MOZZ_AUTOSIGNIN: expected kind,url,user[,password]")
+            return
+        }
+        let username = parts[2]
+        let password = parts.count > 3 ? parts[3] : ""
+
+        do {
+            let session: AuthenticatedSession
+            switch kind {
+            case .jellyfin:
+                session = try await JellyfinAuthenticator(
+                    baseURL: url,
+                    clientInfo: clientInfo,
+                    clientIdentifier: clientIdentifier
+                ).authenticate(username: username, password: password)
+            case .subsonic:
+                session = try await SubsonicAuthenticator(
+                    baseURL: url,
+                    clientInfo: clientInfo,
+                    clientIdentifier: clientIdentifier
+                ).authenticate(username: username, password: password)
+            case .plex:
+                return
+            }
+            activate(session: session)
+        } catch {
+            screenshotLog.error("MOZZ_AUTOSIGNIN failed: \(error)")
+        }
+    }
+
     /// Launch-time recovery plus automation for headless simulator verification
     /// (the accessibility bridge is unavailable in this toolchain). Normal
     /// launches only resume an interrupted catalog mirror; the remaining behavior
@@ -1120,6 +1193,10 @@ public final class AppEnvironment: ObservableObject {
         // guessing — without any credentials leaving the device.
         if env["MOZZ_SYNCPROBE"] == "1", active != nil {
             await runSyncProbe()
+            return
+        }
+        if let spec = env["MOZZ_AUTOSIGNIN"], active == nil {
+            await signInForVerification(spec)
             return
         }
         if env["MOZZ_FORCESYNC"] == "1", active != nil {
