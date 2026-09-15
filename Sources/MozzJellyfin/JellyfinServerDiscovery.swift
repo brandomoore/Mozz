@@ -3,6 +3,21 @@ import MozzCore
 import MozzNetworking
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Android)
+// Android is Bionic, not Glibc, and the sockets live in its own module. Left
+// out, every BSD symbol below is simply missing. Same block as
+// `PlexLocalDiscovery`, which has been portable all along — this file is the
+// one that never caught up, which is why LAN discovery was an iOS-only feature
+// despite living in the shared core.
+import Android
+#elseif canImport(Bionic)
+import Bionic
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
+#if canImport(os)
 import os
 #endif
 
@@ -30,7 +45,9 @@ public protocol JellyfinDiscovering: Sendable {
     func discover(timeout: TimeInterval) -> AsyncStream<DiscoveredServer>
 }
 
-#if canImport(Darwin)
+// Everything below is BSD sockets, which is every platform Mozz targets except
+// Windows — the same line `PlexLocalDiscovery` draws.
+#if !os(Windows)
 public final class JellyfinServerDiscovery: JellyfinDiscovering, @unchecked Sendable {
     /// Largest subnet we will unicast-sweep host-by-host. `/22` (1024 hosts)
     /// comfortably covers home networks while avoiding a pathological sweep of a
@@ -138,7 +155,7 @@ public final class JellyfinServerDiscovery: JellyfinDiscovering, @unchecked Send
         cancelled: AtomicFlag,
         yield: (DiscoveredServer) -> Void
     ) {
-        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
         guard fd >= 0 else {
             log.error("Discovery socket() failed (errno \(errno))")
             return
@@ -157,7 +174,7 @@ public final class JellyfinServerDiscovery: JellyfinDiscovering, @unchecked Send
         // Bind an ephemeral local port so replies have somewhere to land.
         var local = sockaddr_in()
         local.sin_family = sa_family_t(AF_INET)
-        local.sin_addr.s_addr = INADDR_ANY
+        local.sin_addr.s_addr = Self.anyAddress
         local.sin_port = 0
         _ = withUnsafePointer(to: &local) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
@@ -175,10 +192,11 @@ public final class JellyfinServerDiscovery: JellyfinDiscovering, @unchecked Send
                 dst.sin_family = sa_family_t(AF_INET)
                 dst.sin_port = JellyfinDiscoveryParser.discoveryPort.bigEndian
                 dst.sin_addr.s_addr = target
-                _ = probe.withUnsafeBytes { raw in
-                    withUnsafePointer(to: &dst) { ptr in
+                _ = probe.withUnsafeBytes { raw -> Int in
+                    guard let base = raw.baseAddress else { return 0 }
+                    return withUnsafePointer(to: &dst) { ptr in
                         ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                            sendto(fd, raw.baseAddress, raw.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                            sendto(fd, base, raw.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
                         }
                     }
                 }
@@ -260,9 +278,26 @@ public final class JellyfinServerDiscovery: JellyfinDiscovering, @unchecked Send
             append(in_addr_t(broadcast).bigEndian)
         }
 
-        append(INADDR_BROADCAST)  // 255.255.255.255 (byte-order agnostic)
+        append(Self.broadcastAddress)  // 255.255.255.255 (byte-order agnostic)
         return targets
     }
+
+    /// Interface flags, spelled out. Darwin exposes these as `Int32` and Bionic
+    /// as a `net_device_flags` enum, so naming them directly is what lets one
+    /// implementation serve the phone, the tablet and the desktop. The values
+    /// are the same everywhere BSD sockets are. Same constants as
+    /// `PlexLocalDiscovery`, which hit this first.
+    /// Spelled out rather than taken from the platform. `INADDR_ANY` and
+    /// `INADDR_BROADCAST` are C macros, and Bionic does not re-export them to
+    /// Swift — so naming them is what makes one implementation serve every
+    /// platform. Again the same as `PlexLocalDiscovery`.
+    private static let anyAddress: in_addr_t = 0
+    private static let broadcastAddress: in_addr_t = 0xFFFF_FFFF
+
+    private static let flagUp: Int32 = 0x1
+    private static let flagBroadcast: Int32 = 0x2
+    private static let flagLoopback: Int32 = 0x8
+    private static let flagPointToPoint: Int32 = 0x10
 
     private struct Interface { let address: in_addr_t; let netmask: in_addr_t }
 
@@ -281,10 +316,10 @@ public final class JellyfinServerDiscovery: JellyfinDiscovering, @unchecked Send
             let flags = Int32(cur.pointee.ifa_flags)
             guard let sa = cur.pointee.ifa_addr,
                   sa.pointee.sa_family == sa_family_t(AF_INET),
-                  (flags & IFF_UP) != 0,
-                  (flags & IFF_LOOPBACK) == 0,
-                  (flags & IFF_POINTOPOINT) == 0,
-                  (flags & IFF_BROADCAST) != 0,
+                  (flags & Self.flagUp) != 0,
+                  (flags & Self.flagLoopback) == 0,
+                  (flags & Self.flagPointToPoint) == 0,
+                  (flags & Self.flagBroadcast) != 0,
                   let nm = cur.pointee.ifa_netmask else { continue }
 
             let address = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
