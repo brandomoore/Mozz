@@ -31,6 +31,8 @@ import com.thatcube.mozz.ui.StartingScreen
 import com.thatcube.mozz.core.ServerAccount
 import com.thatcube.mozz.core.SyncStatus
 import com.thatcube.mozz.ui.CredentialsScreen
+import com.thatcube.mozz.ui.PlexServerPickerScreen
+import com.thatcube.mozz.ui.QuickConnectScreen
 import com.thatcube.mozz.ui.SyncingScreen
 import com.thatcube.mozz.ui.theme.LocalMozzSettings
 import com.thatcube.mozz.ui.theme.MozzTheme
@@ -137,6 +139,18 @@ class MainActivity : ComponentActivity() {
                 onBack = viewModel::chooseAnotherBackend,
                 onCancel = if (state.canCancel) viewModel::cancelAddServer else null,
                 onDiscover = { viewModel.discoverServers(state.kind) },
+                onQuickConnect = { url -> viewModel.beginQuickConnect(url, state.canCancel) },
+            )
+
+            is AppState.QuickConnecting -> QuickConnectScreen(
+                code = state.code,
+                onCancel = if (state.canCancel) viewModel::cancelAddServer
+                           else viewModel::chooseAnotherBackend,
+            )
+
+            is AppState.ChoosingPlexServer -> PlexServerPickerScreen(
+                servers = state.servers,
+                onSelect = { viewModel.usePlexServer(it) },
             )
 
             is AppState.Linking -> LinkingScreen(

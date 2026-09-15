@@ -8,6 +8,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.thatcube.mozz.core.BackendKind
 import com.thatcube.mozz.core.DiscoveredServer
+import com.thatcube.mozz.core.PlexServerOption
 import com.thatcube.mozz.core.MusicLibrary
 import com.thatcube.mozz.core.MozzLibrary
 import com.thatcube.mozz.core.MozzPlaybackSettings
@@ -24,6 +25,7 @@ import com.thatcube.mozz.playback.PlayerController
 import com.thatcube.mozz.relay.RelayService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -59,6 +61,29 @@ sealed interface AppState {
         val kind: BackendKind,
         val message: String? = null,
         val canCancel: Boolean = false,
+    ) : AppState
+
+    /**
+     * Jellyfin has issued a Quick Connect code; the user approves it in a
+     * Jellyfin they are already signed in to.
+     */
+    data class QuickConnecting(
+        val baseUrl: String,
+        val code: String,
+        val canCancel: Boolean = false,
+    ) : AppState
+
+    /**
+     * More than one server on this Plex account, so the choice is theirs.
+     *
+     * An account commonly reaches a box at home and a friend's share, and
+     * signing in took whichever plex.tv listed first — with no way to tell you
+     * were not on the one you wanted.
+     */
+    data class ChoosingPlexServer(
+        val accountToken: String,
+        val clientIdentifier: String,
+        val servers: List<PlexServerOption>,
     ) : AppState
 
     /** Plex has issued a PIN; the user approves it in a browser. */
@@ -276,6 +301,80 @@ class AppViewModel(
         else _state.value = AppState.EnteringCredentials(kind, canCancel = canCancel)
     }
 
+    // MARK: Quick Connect
+
+    private var quickConnectPoll: Job? = null
+
+    /**
+     * Sign in to Jellyfin without typing a password here.
+     *
+     * The person reads a code off this screen and approves it in a Jellyfin
+     * they are already signed in to — the same trade Plex's link flow makes,
+     * and worth the same thing.
+     */
+    fun beginQuickConnect(baseUrl: String, canCancel: Boolean = false) = viewModelScope.launch {
+        val address = normalizeBaseUrl(baseUrl)
+        if (address.isEmpty()) {
+            _state.value = AppState.EnteringCredentials(
+                BackendKind.JELLYFIN, "Enter your Jellyfin address first.", canCancel)
+            return@launch
+        }
+        runCatching { server.beginQuickConnect(address) }
+            .onSuccess { quick ->
+                _state.value = AppState.QuickConnecting(address, quick.code, canCancel)
+                awaitQuickConnect(address, quick.secret)
+            }
+            .onFailure { error ->
+                _state.value = AppState.EnteringCredentials(
+                    BackendKind.JELLYFIN,
+                    error.message ?: "That server did not offer Quick Connect.",
+                    canCancel)
+            }
+    }
+
+    private fun awaitQuickConnect(baseUrl: String, secret: String) {
+        quickConnectPoll?.cancel()
+        quickConnectPoll = viewModelScope.launch {
+            // Jellyfin expires an unapproved code; polling past that keeps a
+            // dead request warm and tells the user nothing.
+            val deadline = System.currentTimeMillis() + 5 * 60 * 1000
+            while (System.currentTimeMillis() < deadline) {
+                delay(3_000)
+                val approved = runCatching { server.isQuickConnectApproved(baseUrl, secret) }
+                    .getOrDefault(false)
+                if (!approved) continue
+                runCatching { server.completeQuickConnect(baseUrl, secret) }
+                    .onSuccess { account -> chooseLibraryOrSync(account) }
+                    .onFailure { fail("Quick Connect", it) }
+                return@launch
+            }
+            val canCancel = (_state.value as? AppState.QuickConnecting)?.canCancel ?: false
+            _state.value = AppState.EnteringCredentials(
+                BackendKind.JELLYFIN, "That code expired. Try again.", canCancel)
+        }
+    }
+
+    private fun cancelQuickConnect() {
+        quickConnectPoll?.cancel()
+        quickConnectPoll = null
+    }
+
+    /**
+     * Continue sign-in against the chosen Plex server.
+     *
+     * Which server before which person: a Home profile belongs to the account,
+     * but the library belongs to the server, and being asked who is listening
+     * about the wrong box is a worse order to ask in.
+     */
+    fun usePlexServer(option: PlexServerOption) = viewModelScope.launch {
+        val choosing = _state.value as? AppState.ChoosingPlexServer ?: return@launch
+        _state.value = AppState.Starting
+        chooseProfileOrComplete(
+            choosing.accountToken,
+            PlexLink(0, "", choosing.clientIdentifier, ""),
+        )
+    }
+
     /**
      * Ask the network which servers are on it.
      *
@@ -445,7 +544,11 @@ class AppViewModel(
         plexPoll?.cancel()
         plexPoll = viewModelScope.launch {
             runCatching { server.awaitPlexAccountToken(link) }
-                .onSuccess { accountToken -> chooseProfileOrComplete(accountToken, link) }
+                .onSuccess { accountToken ->
+                    if (!choosePlexServerOrProfile(accountToken, link)) {
+                        chooseProfileOrComplete(accountToken, link)
+                    }
+                }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
                     fail("Plex link", error, resumeLink = link)
@@ -466,6 +569,19 @@ class AppViewModel(
      * in as the account owner, which is exactly what happened before this
      * existed. Sign-in must not hinge on an optional Plex feature.
      */
+    /**
+     * Which Plex server, when the account reaches more than one.
+     *
+     * Only asked when there is a genuine choice: a picker with a single row is
+     * a question nobody needed answering.
+     */
+    private suspend fun choosePlexServerOrProfile(accountToken: String, link: PlexLink): Boolean {
+        val servers = runCatching { server.plexServers(accountToken) }.getOrDefault(emptyList())
+        if (servers.size < 2) return false
+        _state.value = AppState.ChoosingPlexServer(accountToken, link.clientIdentifier, servers)
+        return true
+    }
+
     private suspend fun chooseProfileOrComplete(accountToken: String, link: PlexLink) {
         val users = runCatching { server.plexHomeUsers(accountToken, link.clientIdentifier) }
             .getOrDefault(emptyList())

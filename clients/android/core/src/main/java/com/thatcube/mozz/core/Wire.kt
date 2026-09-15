@@ -35,6 +35,8 @@ data class CoreRequest(
 
     // Sign-in, sync and streaming.
     val kind: String? = null,
+    /** Jellyfin Quick Connect's opaque handle, carried between its three steps. */
+    val secret: String? = null,
     val baseURL: String? = null,
     val username: String? = null,
     val password: String? = null,
@@ -589,6 +591,23 @@ enum class LikeGlyph { HEART, STAR }
 private const val LIKE_RATING_THRESHOLD = 4.0
 
 // MARK: - Saved accounts
+
+/** Quick Connect's first step: the code to type, and the secret to redeem. */
+@Serializable
+data class QuickConnectSession(val secret: String, val code: String)
+
+@Serializable
+data class QuickConnectState(val approved: Boolean = false)
+
+/** One server on a Plex account, collapsed from its several addresses. */
+@Serializable
+data class PlexServerOption(
+    val id: String,
+    val name: String,
+    val uri: String,
+    val isLocal: Boolean = false,
+    val isRelay: Boolean = false,
+)
 
 /** A server that answered on the local network. */
 @Serializable

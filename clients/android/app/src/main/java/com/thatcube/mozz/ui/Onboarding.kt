@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.runtime.rememberCoroutineScope
 import com.thatcube.mozz.core.BackendKind
 import com.thatcube.mozz.core.DiscoveredServer
+import com.thatcube.mozz.core.PlexServerOption
 import kotlinx.coroutines.launch
 import com.thatcube.mozz.core.SyncPhaseRow
 import com.thatcube.mozz.core.SyncProgressSmoother
@@ -296,6 +297,8 @@ fun CredentialsScreen(
     onCancel: (() -> Unit)? = null,
     /** Ask the network what is on it. Null where nothing wired discovery. */
     onDiscover: (suspend () -> List<DiscoveredServer>)? = null,
+    /** Start Jellyfin's Quick Connect against the address typed so far. */
+    onQuickConnect: ((String) -> Unit)? = null,
 ) {
     val brand = Brand.of(kind)
     var address by remember(kind) { mutableStateOf("") }
@@ -410,6 +413,20 @@ fun CredentialsScreen(
         ) {
             Text("Sign in", style = MaterialTheme.typography.labelLarge)
         }
+        // Jellyfin can be signed in to without a password reaching this app at
+        // all — offered under the form rather than instead of it, because it
+        // needs the address either way.
+        if (onQuickConnect != null && kind == BackendKind.JELLYFIN) {
+            Spacer(Modifier.height(10.dp))
+            OutlinedButton(
+                onClick = { onQuickConnect(address) },
+                enabled = address.isNotBlank(),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) {
+                Text("Use Quick Connect instead")
+            }
+        }
+
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = onBack) { Text("Use a different server") }
         if (onCancel != null) {
@@ -843,6 +860,96 @@ fun SyncStatusCard(status: SyncStatus, modifier: Modifier = Modifier) {
                 Text(status.describe(), style = quietBody)
             } else {
                 SyncBreakdown(rows)
+            }
+        }
+    }
+}
+
+/**
+ * Jellyfin's Quick Connect: read the code here, approve it in a Jellyfin you
+ * are already signed in to.
+ *
+ * The same trade Plex's link flow makes, and worth the same thing — a password
+ * typed into another app is a password that app could have kept.
+ */
+@Composable
+fun QuickConnectScreen(code: String, onCancel: () -> Unit) {
+    OnboardingScaffold(
+        title = "Approve Mozz in Jellyfin",
+        subtitle = "Open Jellyfin where you are already signed in, find Quick Connect, " +
+            "and enter this code.",
+    ) {
+        Text(
+            code,
+            style = MaterialTheme.typography.displayMedium,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.height(18.dp))
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            Text("Waiting for Jellyfin…", style = quietBody)
+        }
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = onCancel) { Text("Cancel") }
+    }
+}
+
+/**
+ * Which Plex server, when the account reaches more than one.
+ *
+ * An account commonly reaches a box at home and a friend's share, and signing
+ * in took whichever plex.tv listed first — with no way to tell you were not on
+ * the one you wanted.
+ */
+@Composable
+fun PlexServerPickerScreen(
+    servers: List<PlexServerOption>,
+    onSelect: (PlexServerOption) -> Unit,
+) {
+    OnboardingScaffold(
+        title = "Which server?",
+        subtitle = "This Plex account reaches more than one. Mozz will mirror the one you pick.",
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = MaterialTheme.shapes.large,
+            border = if (LocalMozzBlackout.current) {
+                BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            } else {
+                null
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            LazyColumn(contentPadding = PaddingValues(vertical = 4.dp)) {
+                items(servers, key = { it.id }) { server ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(server) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                    ) {
+                        Text(server.name, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            // Says how it will be reached, which is the thing
+                            // that differs between two servers with one name.
+                            when {
+                                server.isLocal -> "On this network"
+                                server.isRelay -> "Through Plex's relay — slower"
+                                else -> "Remote"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (server != servers.last()) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
+                }
             }
         }
     }

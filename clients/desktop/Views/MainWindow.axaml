@@ -408,6 +408,54 @@
                                 HorizontalContentAlignment="Center"
                                 IsEnabled="{Binding !Connect.IsBusy}"
                                 Command="{Binding Connect.SignInCommand}" />
+                        <!-- Jellyfin's Quick Connect: read the code here, approve it in a
+                             Jellyfin you are already signed in to. The same trade Plex's link
+                             makes, and worth the same thing — a password typed into another app
+                             is a password that app could have kept. -->
+                        <Button Classes="secondary" HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Center"
+                                Content="Use Quick Connect instead"
+                                IsVisible="{Binding Connect.IsJellyfin}"
+                                IsEnabled="{Binding !Connect.IsQuickConnecting}"
+                                Command="{Binding Connect.QuickConnectCommand}" />
+                        <Border IsVisible="{Binding Connect.IsQuickConnecting}"
+                                Background="{DynamicResource SurfaceRaised}" CornerRadius="12" Padding="14">
+                            <StackPanel Spacing="8">
+                                <TextBlock Classes="secondary" TextWrapping="Wrap"
+                                           Text="Enter this code in Jellyfin, under Quick Connect." />
+                                <TextBlock Text="{Binding Connect.QuickConnectCode}"
+                                           FontSize="30" FontWeight="Bold"
+                                           Foreground="{DynamicResource Accent}" />
+                                <Button Content="Cancel" Classes="secondary"
+                                        Command="{Binding Connect.CancelQuickConnectCommand}" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Which Plex server. An account commonly reaches more than one — a box
+                             at home and a friend's share — and this used to take whichever
+                             plex.tv listed first, with no way to tell you were on the wrong one.
+                             Only shown when there is a genuine choice. -->
+                        <Border IsVisible="{Binding Connect.HasPlexServers}"
+                                Background="{DynamicResource SurfaceRaised}" CornerRadius="12" Padding="14">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Which server?" Classes="primary" FontWeight="SemiBold" />
+                                <ItemsControl ItemsSource="{Binding Connect.PlexServers}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate DataType="core:PlexServerOption">
+                                            <Button Classes="backendRow" Margin="0,1"
+                                                    Command="{Binding $parent[Window].DataContext.Connect.UsePlexServerCommand}"
+                                                    CommandParameter="{Binding}">
+                                                <StackPanel Spacing="1">
+                                                    <TextBlock Text="{Binding Name}" Classes="primary" />
+                                                    <TextBlock Text="{Binding Uri}" Classes="secondary" FontSize="11.5" />
+                                                </StackPanel>
+                                            </Button>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
 
                         <!-- Plex's approval, in the same place rather than on a
                              screen of its own: the link is the whole flow. -->
@@ -3159,6 +3207,54 @@
                                                     <Button Content="Sign in" Classes="primary" HorizontalAlignment="Left"
                                                             IsEnabled="{Binding !Connect.IsBusy}"
                                                             Command="{Binding Connect.SignInCommand}" />
+                                                    <!-- Jellyfin's Quick Connect: read the code here, approve it in a
+                                                         Jellyfin you are already signed in to. The same trade Plex's link
+                                                         makes, and worth the same thing — a password typed into another app
+                                                         is a password that app could have kept. -->
+                                                    <Button Classes="secondary" HorizontalAlignment="Stretch"
+                                                            HorizontalContentAlignment="Center"
+                                                            Content="Use Quick Connect instead"
+                                                            IsVisible="{Binding Connect.IsJellyfin}"
+                                                            IsEnabled="{Binding !Connect.IsQuickConnecting}"
+                                                            Command="{Binding Connect.QuickConnectCommand}" />
+                                                    <Border IsVisible="{Binding Connect.IsQuickConnecting}"
+                                                            Background="{DynamicResource SurfaceRaised}" CornerRadius="12" Padding="14">
+                                                        <StackPanel Spacing="8">
+                                                            <TextBlock Classes="secondary" TextWrapping="Wrap"
+                                                                       Text="Enter this code in Jellyfin, under Quick Connect." />
+                                                            <TextBlock Text="{Binding Connect.QuickConnectCode}"
+                                                                       FontSize="30" FontWeight="Bold"
+                                                                       Foreground="{DynamicResource Accent}" />
+                                                            <Button Content="Cancel" Classes="secondary"
+                                                                    Command="{Binding Connect.CancelQuickConnectCommand}" />
+                                                        </StackPanel>
+                                                    </Border>
+
+                                                    <!-- Which Plex server. An account commonly reaches more than one — a box
+                                                         at home and a friend's share — and this used to take whichever
+                                                         plex.tv listed first, with no way to tell you were on the wrong one.
+                                                         Only shown when there is a genuine choice. -->
+                                                    <Border IsVisible="{Binding Connect.HasPlexServers}"
+                                                            Background="{DynamicResource SurfaceRaised}" CornerRadius="12" Padding="14">
+                                                        <StackPanel Spacing="8">
+                                                            <TextBlock Text="Which server?" Classes="primary" FontWeight="SemiBold" />
+                                                            <ItemsControl ItemsSource="{Binding Connect.PlexServers}">
+                                                                <ItemsControl.ItemTemplate>
+                                                                    <DataTemplate DataType="core:PlexServerOption">
+                                                                        <Button Classes="backendRow" Margin="0,1"
+                                                                                Command="{Binding $parent[Window].DataContext.Connect.UsePlexServerCommand}"
+                                                                                CommandParameter="{Binding}">
+                                                                            <StackPanel Spacing="1">
+                                                                                <TextBlock Text="{Binding Name}" Classes="primary" />
+                                                                                <TextBlock Text="{Binding Uri}" Classes="secondary" FontSize="11.5" />
+                                                                            </StackPanel>
+                                                                        </Button>
+                                                                    </DataTemplate>
+                                                                </ItemsControl.ItemTemplate>
+                                                            </ItemsControl>
+                                                        </StackPanel>
+                                                    </Border>
+
 
                                                     <TextBlock Text="{Binding Connect.Message}" Classes="secondary" TextWrapping="Wrap"
                                                                IsVisible="{Binding Connect.Message, Converter={x:Static ObjectConverters.IsNotNull}}" />

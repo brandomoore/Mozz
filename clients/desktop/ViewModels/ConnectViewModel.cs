@@ -1,4 +1,5 @@
 using Avalonia.Input.Platform;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Mozz.Desktop.Core;
@@ -92,6 +93,182 @@ public sealed partial class ConnectViewModel : ViewModelBase
     public string UrlPlaceholder => Kind == BackendKind.Jellyfin
         ? "192.168.1.10:8096"
         : "music.example.com";
+
+    // MARK: Plex servers
+
+    /// <summary>The servers on the linked Plex account, once it has one.</summary>
+    public System.Collections.ObjectModel.ObservableCollection<PlexServerOption> PlexServers { get; } = [];
+
+    public bool HasPlexServers => PlexServers.Count > 0;
+
+    /// <summary>
+    /// Which Plex server to sign in to.
+    ///
+    /// A Plex account commonly reaches more than one — a box at home and a
+    /// friend's share — and signing in picked whichever the account listed
+    /// first. iOS has offered the choice since it shipped; here there was no
+    /// choice to make, and no way to tell you were not on the one you wanted.
+    ///
+    /// Only asked when there is more than one: a picker with a single row is a
+    /// question nobody needed answering.
+    /// </summary>
+    private async Task LoadPlexServersAsync(string accountToken)
+    {
+        PlexServers.Clear();
+        OnPropertyChanged(nameof(HasPlexServers));
+        try
+        {
+            var servers = await _server.PlexServersAsync(accountToken);
+            if (servers.Count < 2) return;
+            foreach (var server in servers) PlexServers.Add(server);
+            OnPropertyChanged(nameof(HasPlexServers));
+            Message = "Which server?";
+        }
+        catch (Exception ex)
+        {
+            // Not fatal: sign-in continues against whichever plex.tv listed
+            // first, which is exactly what happened before this existed.
+            Message = Explain(ex);
+        }
+    }
+
+    /// <summary>Continue sign-in against the chosen Plex server.</summary>
+    [RelayCommand]
+    private async Task UsePlexServerAsync(PlexServerOption? server)
+    {
+        if (server is null || _pendingPlexAccountToken is not { } accountToken) return;
+        PlexServers.Clear();
+        OnPropertyChanged(nameof(HasPlexServers));
+        try
+        {
+            IsBusy = true;
+            Message = $"Signing in to {server.Name}…";
+            var users = await _server.PlexHomeUsersAsync(
+                accountToken, _pendingPlexClientIdentifier ?? string.Empty);
+            if (users.Count > 1
+                || users.FirstOrDefault() is { IsAdmin: false, RequiresPIN: true })
+            {
+                PlexHomeUsers.Clear();
+                foreach (var user in users) PlexHomeUsers.Add(user);
+                Message = "Who’s listening?";
+                return;
+            }
+            // No Home on this account: the owner is the only listener, and
+            // `CompletePlexLogin` treats a nameless user as exactly that.
+            await FinishPlexHomeUserAsync(
+                users.FirstOrDefault()
+                    ?? new PlexHomeUser(string.Empty, string.Empty, false, true, false, null),
+                profilePIN: null);
+        }
+        catch (Exception ex)
+        {
+            Message = Explain(ex);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    // MARK: Quick Connect
+
+    /// <summary>Jellyfin's code, shown while its approval is pending.</summary>
+    [ObservableProperty] private string? _quickConnectCode;
+
+    private CancellationTokenSource? _quickConnectPoll;
+
+    public bool IsQuickConnecting => QuickConnectCode is { Length: > 0 };
+
+    partial void OnQuickConnectCodeChanged(string? value) =>
+        OnPropertyChanged(nameof(IsQuickConnecting));
+
+    /// <summary>
+    /// Sign in to Jellyfin without typing a password here.
+    ///
+    /// The person reads a code off this screen and approves it in a Jellyfin
+    /// they are already signed in to — the same trade Plex's link flow makes,
+    /// and the reason it is worth having: a password typed into a third-party
+    /// app is a password that app could have kept.
+    /// </summary>
+    [RelayCommand]
+    private async Task QuickConnectAsync()
+    {
+        var url = NormalizeUrl(ServerUrl);
+        if (url is null)
+        {
+            Message = "Enter your Jellyfin address first.";
+            return;
+        }
+
+        CancelQuickConnect();
+        try
+        {
+            IsBusy = true;
+            var quick = await _server.BeginQuickConnectAsync(url);
+            QuickConnectCode = quick.Code;
+            Message = "Approve this code in Jellyfin.";
+
+            var cts = new CancellationTokenSource();
+            _quickConnectPoll = cts;
+            var token = cts.Token;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    // Jellyfin expires an unapproved code; polling past that
+                    // keeps a dead request warm and tells the user nothing.
+                    var deadline = DateTimeOffset.UtcNow.AddMinutes(5);
+                    while (DateTimeOffset.UtcNow < deadline)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(3), token);
+                        if (!await _server.IsQuickConnectApprovedAsync(url, quick.Secret, token)) continue;
+
+                        var account = await _server.CompleteQuickConnectAsync(
+                            url, quick.Secret, Username.Trim(), token);
+                        await Dispatcher.UIThread.InvokeAsync(async () =>
+                        {
+                            QuickConnectCode = null;
+                            await AfterSignInAsync(account);
+                        });
+                        return;
+                    }
+                    await Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        QuickConnectCode = null;
+                        Message = "That code expired. Try again.";
+                    });
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    await Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        QuickConnectCode = null;
+                        Message = Explain(ex);
+                    });
+                }
+            }, token);
+        }
+        catch (Exception ex)
+        {
+            QuickConnectCode = null;
+            Message = Explain(ex);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand]
+    private void CancelQuickConnect()
+    {
+        _quickConnectPoll?.Cancel();
+        _quickConnectPoll?.Dispose();
+        _quickConnectPoll = null;
+        QuickConnectCode = null;
+    }
 
     /// <summary>Servers found on this network, for the sign-in form to offer.</summary>
     public System.Collections.ObjectModel.ObservableCollection<DiscoveredServer> Discovered { get; } = [];
@@ -261,14 +438,20 @@ public sealed partial class ConnectViewModel : ViewModelBase
 
                 PlexCode = null;
                 PlexLinkUrl = null;
+                // Which server, before which person: a Home profile belongs to
+                // the account, but the library belongs to the server, and being
+                // asked who is listening about the wrong box is a worse order.
+                _pendingPlexAccountToken = accountToken;
+                _pendingPlexClientIdentifier = link.ClientIdentifier;
+                await LoadPlexServersAsync(accountToken);
+                if (HasPlexServers) return;
+
                 var users = await _server.PlexHomeUsersAsync(
                     accountToken, link.ClientIdentifier, token);
                 if (users.Count > 1
                     || users.FirstOrDefault() is
                         { IsAdmin: false, RequiresPIN: true })
                 {
-                    _pendingPlexAccountToken = accountToken;
-                    _pendingPlexClientIdentifier = link.ClientIdentifier;
                     PlexHomeUsers.Clear();
                     foreach (var user in users) PlexHomeUsers.Add(user);
                     Message = "Who’s listening?";

@@ -109,6 +109,70 @@ public sealed class MozzServer(MozzCore core, ISecretStore secrets, string? acco
         }, token).ConfigureAwait(false) ?? [];
     }
 
+    /// <summary>
+    /// Start Jellyfin's Quick Connect: show the code, and the person approves it
+    /// in a Jellyfin they are already signed in to. No password is typed here.
+    /// </summary>
+    public async Task<QuickConnectSession> BeginQuickConnectAsync(
+        string baseUrl, CancellationToken token = default)
+    {
+        return await core.CallAsync<QuickConnectSession>(new
+        {
+            cmd = "quickConnectBegin",
+            baseURL = baseUrl,
+            clientIdentifier = ClientIdentifier,
+        }, token).ConfigureAwait(false)
+            ?? throw new MozzCoreException("Jellyfin did not return a Quick Connect code.");
+    }
+
+    /// <summary>Whether the code has been approved yet. Polled by the caller.</summary>
+    public async Task<bool> IsQuickConnectApprovedAsync(
+        string baseUrl, string secret, CancellationToken token = default)
+    {
+        var state = await core.CallAsync<QuickConnectState>(new
+        {
+            cmd = "quickConnectCheck",
+            baseURL = baseUrl,
+            secret,
+            clientIdentifier = ClientIdentifier,
+        }, token).ConfigureAwait(false);
+        return state?.Approved ?? false;
+    }
+
+    /// <summary>Exchange an approved secret for a session, and save it.</summary>
+    public async Task<ServerAccount> CompleteQuickConnectAsync(
+        string baseUrl, string secret, string? username, CancellationToken token = default)
+    {
+        var session = await core.CallAsync<SessionPayload>(new
+        {
+            cmd = "quickConnectComplete",
+            baseURL = baseUrl,
+            secret,
+            clientIdentifier = ClientIdentifier,
+        }, token).ConfigureAwait(false)
+            ?? throw new MozzCoreException("Jellyfin did not return a session.");
+        return Persist(session, username, ClientIdentifier);
+    }
+
+    /// <summary>
+    /// The servers on a Plex account, one entry each.
+    /// </summary>
+    /// <remarks>
+    /// plex.tv reports a local, a remote and often a relay address for the same
+    /// box; the core collapses them, because a picker listing one server three
+    /// times is a worse answer than one.
+    /// </remarks>
+    public async Task<IReadOnlyList<PlexServerOption>> PlexServersAsync(
+        string accountToken, CancellationToken token = default)
+    {
+        return await core.CallAsync<IReadOnlyList<PlexServerOption>>(new
+        {
+            cmd = "plexServers",
+            accountToken,
+            clientIdentifier = ClientIdentifier,
+        }, token).ConfigureAwait(false) ?? [];
+    }
+
     public async Task<IReadOnlyList<PlexHomeUser>> PlexHomeUsersAsync(
         string accountToken,
         string clientIdentifier,
@@ -897,6 +961,22 @@ public static class BackendKindExtensions
 }
 
 /// <summary>A saved server, minus its secret.</summary>
+/// <summary>Quick Connect's first step: the code to type, and the secret to redeem.</summary>
+public sealed record QuickConnectSession(
+    [property: JsonPropertyName("secret")] string Secret,
+    [property: JsonPropertyName("code")] string Code);
+
+public sealed record QuickConnectState(
+    [property: JsonPropertyName("approved")] bool Approved);
+
+/// <summary>One server on a Plex account, collapsed from its several addresses.</summary>
+public sealed record PlexServerOption(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("isLocal")] bool IsLocal,
+    [property: JsonPropertyName("isRelay")] bool IsRelay);
+
 /// <summary>A server that answered on the local network.</summary>
 public sealed record DiscoveredServer(
     [property: JsonPropertyName("kind")] string Kind,

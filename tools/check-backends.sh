@@ -162,6 +162,36 @@ for shell in ios android desktop; do
   fi
 done
 
+# ---------------------------------------------------------------------------
+# Signing in without typing a password, and picking which server.
+#
+# Both live in the core and both were Apple-only for the same reason as
+# discovery: no FFI command, so no other client could reach them. Quick Connect
+# is Jellyfin's answer to the same problem Plex's link flow solves — a password
+# typed into a third-party app is a password that app could have kept — and the
+# Plex picker is the difference between signing in to the server you meant and
+# whichever plex.tv happened to list first.
+echo
+for shell in ios android desktop; do
+  file=$(discovery_surface "$shell")
+  missing=()
+  grep -qi "quick.\?connect" "$file"/* 2>/dev/null || grep -qi "quick.\?connect" "$file" 2>/dev/null \
+    || missing+=("Quick Connect")
+  case "$shell" in
+    ios) picker="$ROOT/Sources/MozzApp/Settings/PlexLibraryPickerView.swift" ;;
+    android) picker="$file" ;;
+    desktop) picker="$file" ;;
+  esac
+  grep -qiE "plexserver" "$picker" 2>/dev/null || missing+=("Plex server picker")
+
+  if [ ${#missing[@]} -eq 0 ]; then
+    printf '%-8s offers Quick Connect and a Plex server picker\n' "$shell"
+  else
+    printf '%-8s CANNOT: %s\n' "$shell" "${missing[*]}"
+    status=1
+  fi
+done
+
 if [ "$mode" = "--check" ] && [ "$status" -ne 0 ]; then
   echo
   echo "An app is behind on servers."

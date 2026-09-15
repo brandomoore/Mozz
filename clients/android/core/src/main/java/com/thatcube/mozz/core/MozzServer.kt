@@ -82,6 +82,68 @@ class MozzServer(
         ) ?: emptyList()
 
     /**
+     * Start Jellyfin's Quick Connect: show the code, and the person approves it
+     * in a Jellyfin they are already signed in to. No password is typed here.
+     *
+     * Three steps rather than one blocking call, mirroring the Plex PIN flow:
+     * the caller owns the polling, so it can show the code, cancel and time out
+     * on its own terms.
+     */
+    suspend fun beginQuickConnect(baseUrl: String): QuickConnectSession =
+        core.require(
+            CoreRequest(
+                cmd = "quickConnectBegin",
+                baseURL = baseUrl,
+                clientIdentifier = clientIdentifier(),
+            )
+        )
+
+    /** Whether the code has been approved yet. Polled by the caller. */
+    suspend fun isQuickConnectApproved(baseUrl: String, secret: String): Boolean =
+        core.call<QuickConnectState>(
+            CoreRequest(
+                cmd = "quickConnectCheck",
+                baseURL = baseUrl,
+                secret = secret,
+                clientIdentifier = clientIdentifier(),
+            )
+        )?.approved ?: false
+
+    /** Exchange an approved secret for a session, and save it. */
+    suspend fun completeQuickConnect(
+        baseUrl: String,
+        secret: String,
+        username: String? = null,
+    ): ServerAccount {
+        val identifier = clientIdentifier()
+        val session: SessionPayload = core.require(
+            CoreRequest(
+                cmd = "quickConnectComplete",
+                baseURL = baseUrl,
+                secret = secret,
+                clientIdentifier = identifier,
+            )
+        )
+        return persist(session, username, identifier)
+    }
+
+    /**
+     * The servers on a Plex account, one entry each.
+     *
+     * plex.tv reports a local, a remote and often a relay address for the same
+     * box; the core collapses them, because a picker listing one server three
+     * times is a worse answer than one.
+     */
+    suspend fun plexServers(accountToken: String): List<PlexServerOption> =
+        core.call<List<PlexServerOption>>(
+            CoreRequest(
+                cmd = "plexServers",
+                accountToken = accountToken,
+                clientIdentifier = clientIdentifier(),
+            )
+        ) ?: emptyList()
+
+    /**
      * Start Plex's PIN flow. The user opens [PlexLink.linkUrl] in a browser and
      * approves there — no password is ever typed into Mozz — then
      * [pollPlexLink] is called until it returns an account.
