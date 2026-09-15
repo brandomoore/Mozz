@@ -83,6 +83,32 @@ public sealed class MozzServer(MozzCore core, ISecretStore secrets, string? acco
         return payload?.AccountToken;
     }
 
+    /// <summary>
+    /// Servers answering on this network, so signing in can offer them rather
+    /// than ask for an address.
+    /// </summary>
+    /// <remarks>
+    /// Both discoveries have lived in the core for as long as the backends have
+    /// — Plex's GDM sweep and Jellyfin's UDP probe — and neither had a command,
+    /// so only the Apple app could offer them. Everywhere else you typed an
+    /// address out of your router's admin page.
+    ///
+    /// <paramref name="seconds"/> is the whole budget, not per backend: the
+    /// probes run concurrently in the core.
+    /// </remarks>
+    public async Task<IReadOnlyList<DiscoveredServer>> DiscoverServersAsync(
+        BackendKind? kind = null,
+        int seconds = 3,
+        CancellationToken token = default)
+    {
+        return await core.CallAsync<IReadOnlyList<DiscoveredServer>>(new
+        {
+            cmd = "discoverServers",
+            kind = kind?.Wire(),
+            size = seconds,
+        }, token).ConfigureAwait(false) ?? [];
+    }
+
     public async Task<IReadOnlyList<PlexHomeUser>> PlexHomeUsersAsync(
         string accountToken,
         string clientIdentifier,
@@ -871,6 +897,13 @@ public static class BackendKindExtensions
 }
 
 /// <summary>A saved server, minus its secret.</summary>
+/// <summary>A server that answered on the local network.</summary>
+public sealed record DiscoveredServer(
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("url")] string Url,
+    [property: JsonPropertyName("serverId")] string? ServerId);
+
 public sealed record ServerAccount
 {
     public required string ServerId { get; init; }

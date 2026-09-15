@@ -13,7 +13,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
+import androidx.compose.runtime.rememberCoroutineScope
 import com.thatcube.mozz.core.BackendKind
+import com.thatcube.mozz.core.DiscoveredServer
+import kotlinx.coroutines.launch
 import com.thatcube.mozz.core.SyncPhaseRow
 import com.thatcube.mozz.core.SyncProgressSmoother
 import kotlinx.coroutines.delay
@@ -291,13 +294,76 @@ fun CredentialsScreen(
     onSubmit: (baseUrl: String, username: String, password: String) -> Unit,
     onBack: () -> Unit,
     onCancel: (() -> Unit)? = null,
+    /** Ask the network what is on it. Null where nothing wired discovery. */
+    onDiscover: (suspend () -> List<DiscoveredServer>)? = null,
 ) {
     val brand = Brand.of(kind)
     var address by remember(kind) { mutableStateOf("") }
     var username by remember(kind) { mutableStateOf("") }
     var password by remember(kind) { mutableStateOf("") }
+    var discovering by remember { mutableStateOf(false) }
+    var found by remember(kind) { mutableStateOf<List<DiscoveredServer>?>(null) }
+    val scope = rememberCoroutineScope()
 
     OnboardingScaffold(title = "Sign in to ${brand.kind.display}", subtitle = brand.hint) {
+        // What is on this network, rather than what you can remember. Plex and
+        // Jellyfin both answer a probe; Subsonic has no discovery protocol, so
+        // the address box stays for it either way.
+        //
+        // Asked for, not automatic: the sweep sends a packet to every host on
+        // the subnet, which is fine when someone has asked to find a server and
+        // rude on the way past.
+        if (onDiscover != null) {
+            OutlinedButton(
+                onClick = {
+                    if (!discovering) scope.launch {
+                        discovering = true
+                        found = runCatching { onDiscover() }.getOrDefault(emptyList())
+                        discovering = false
+                    }
+                },
+                enabled = !discovering,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) {
+                Text(if (discovering) "Looking…" else "Find servers on my network")
+            }
+
+            found?.let { servers ->
+                Spacer(Modifier.height(10.dp))
+                if (servers.isEmpty()) {
+                    Text(
+                        "Nothing answered. Enter the address instead.",
+                        style = quietBody,
+                    )
+                } else {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.large,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column {
+                            servers.forEach { server ->
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { address = server.url }
+                                        .padding(horizontal = 14.dp, vertical = 11.dp),
+                                ) {
+                                    Text(server.name, style = MaterialTheme.typography.titleSmall)
+                                    Text(
+                                        server.url,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+
         OutlinedTextField(
             value = address,
             onValueChange = { address = it },

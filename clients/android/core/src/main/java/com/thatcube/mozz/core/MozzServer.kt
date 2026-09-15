@@ -65,6 +65,23 @@ class MozzServer(
     }
 
     /**
+     * Servers answering on this network, so signing in can offer them rather
+     * than ask for an address.
+     *
+     * Both discoveries have lived in the shared core for as long as the
+     * backends have — Plex's GDM sweep and Jellyfin's UDP probe — and neither
+     * had a command, so only the Apple app could offer them. Everywhere else
+     * you typed an address out of your router's admin page.
+     *
+     * [seconds] is the whole budget, not per backend: the probes run
+     * concurrently in the core.
+     */
+    suspend fun discoverServers(kind: BackendKind? = null, seconds: Int = 3): List<DiscoveredServer> =
+        core.call<List<DiscoveredServer>>(
+            CoreRequest(cmd = "discoverServers", kind = kind?.wire, size = seconds)
+        ) ?: emptyList()
+
+    /**
      * Start Plex's PIN flow. The user opens [PlexLink.linkUrl] in a browser and
      * approves there — no password is ever typed into Mozz — then
      * [pollPlexLink] is called until it returns an account.

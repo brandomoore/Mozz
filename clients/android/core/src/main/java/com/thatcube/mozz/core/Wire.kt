@@ -590,6 +590,19 @@ private const val LIKE_RATING_THRESHOLD = 4.0
 
 // MARK: - Saved accounts
 
+/** A server that answered on the local network. */
+@Serializable
+data class DiscoveredServer(
+    val kind: String,
+    val name: String,
+    /** The address that actually answered, ready to sign in against. */
+    val url: String,
+    /** The server's own identifier where it announces one. */
+    val serverId: String? = null,
+) {
+    val backend: BackendKind? get() = runCatching { BackendKind.parse(kind) }.getOrNull()
+}
+
 enum class BackendKind(val wire: String, val display: String) {
     PLEX("plex", "Plex"),
     JELLYFIN("jellyfin", "Jellyfin"),

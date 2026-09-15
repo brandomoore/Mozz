@@ -26,6 +26,7 @@
         <core:StringMatchConverter x:Key="StringMatch" />
         <core:PendingOpacityConverter x:Key="PendingOpacity" />
         <core:ArtworkPlaceholderConverter x:Key="ArtworkPlaceholder" />
+        <core:DiscoverLabelConverter x:Key="DiscoverLabel" />
     </Window.Resources>
 
     <Window.Styles>
@@ -353,6 +354,40 @@
                         <TextBlock Classes="secondary" TextWrapping="Wrap" TextAlignment="Center"
                                    Text="{Binding Connect.KindHint}" />
 
+
+                        <!--
+                            What is on this network, rather than what you can
+                            remember. Plex and Jellyfin both answer a probe;
+                            Subsonic has no discovery protocol, so this offers
+                            whatever replies and the address box stays for it.
+
+                            Asked for, not automatic: the sweep sends a packet to
+                            every host on the subnet, which is fine when someone
+                            has asked to find a server and rude on the way past.
+                        -->
+                        <StackPanel Spacing="9">
+                            <Button Classes="secondary" HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Center"
+                                    IsEnabled="{Binding !Connect.IsDiscovering}"
+                                    Command="{Binding Connect.DiscoverCommand}"
+                                    Content="{Binding Connect.IsDiscovering,
+                                              Converter={StaticResource DiscoverLabel}}" />
+                            <ItemsControl ItemsSource="{Binding Connect.Discovered}"
+                                          IsVisible="{Binding Connect.HasDiscovered}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate DataType="core:DiscoveredServer">
+                                        <Button Classes="backendRow" Margin="0,1"
+                                                Command="{Binding $parent[Window].DataContext.Connect.UseDiscoveredCommand}"
+                                                CommandParameter="{Binding}">
+                                            <StackPanel Spacing="1">
+                                                <TextBlock Text="{Binding Name}" Classes="primary" />
+                                                <TextBlock Text="{Binding Url}" Classes="secondary" FontSize="11.5" />
+                                            </StackPanel>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
                         <StackPanel Spacing="9" IsVisible="{Binding Connect.NeedsCredentials}">
                             <TextBox Text="{Binding Connect.ServerUrl}"
                                      PlaceholderText="{Binding Connect.UrlPlaceholder}"
@@ -2980,6 +3015,40 @@
                                                         </ItemsControl.ItemTemplate>
                                                     </ItemsControl>
 
+
+                                    <!--
+                                    What is on this network, rather than what you can
+                                    remember. Plex and Jellyfin both answer a probe;
+                                    Subsonic has no discovery protocol, so this offers
+                                    whatever replies and the address box stays for it.
+
+                                    Asked for, not automatic: the sweep sends a packet to
+                                    every host on the subnet, which is fine when someone
+                                    has asked to find a server and rude on the way past.
+                                    -->
+                                    <StackPanel Spacing="9">
+                                    <Button Classes="secondary" HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Center"
+                                    IsEnabled="{Binding !Connect.IsDiscovering}"
+                                    Command="{Binding Connect.DiscoverCommand}"
+                                    Content="{Binding Connect.IsDiscovering,
+                                    Converter={StaticResource DiscoverLabel}}" />
+                                    <ItemsControl ItemsSource="{Binding Connect.Discovered}"
+                                    IsVisible="{Binding Connect.HasDiscovered}">
+                                    <ItemsControl.ItemTemplate>
+                                    <DataTemplate DataType="core:DiscoveredServer">
+                                    <Button Classes="backendRow" Margin="0,1"
+                                    Command="{Binding $parent[Window].DataContext.Connect.UseDiscoveredCommand}"
+                                    CommandParameter="{Binding}">
+                                    <StackPanel Spacing="1">
+                                    <TextBlock Text="{Binding Name}" Classes="primary" />
+                                    <TextBlock Text="{Binding Url}" Classes="secondary" FontSize="11.5" />
+                                    </StackPanel>
+                                    </Button>
+                                    </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    </StackPanel>
                                                     <StackPanel Spacing="9" IsVisible="{Binding Connect.NeedsCredentials}">
                                                         <TextBox Text="{Binding Connect.ServerUrl}"
                                                                  PlaceholderText="{Binding Connect.UrlPlaceholder}"

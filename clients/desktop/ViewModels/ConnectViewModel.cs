@@ -93,6 +93,66 @@ public sealed partial class ConnectViewModel : ViewModelBase
         ? "192.168.1.10:8096"
         : "music.example.com";
 
+    /// <summary>Servers found on this network, for the sign-in form to offer.</summary>
+    public System.Collections.ObjectModel.ObservableCollection<DiscoveredServer> Discovered { get; } = [];
+
+    [ObservableProperty] private bool _isDiscovering;
+
+    public bool HasDiscovered => Discovered.Count > 0;
+
+    /// <summary>
+    /// Ask the network which servers are on it.
+    ///
+    /// Offered rather than automatic: a sweep sends a packet to every host on
+    /// the subnet, which is reasonable when someone has asked to find a server
+    /// and rude because a settings pane happened to open. Plex and Jellyfin both
+    /// answer; Subsonic has no discovery protocol of its own, so a Subsonic
+    /// search correctly finds nothing — which is why it asks for both rather
+    /// than narrowing to a backend that cannot reply.
+    /// </summary>
+    [RelayCommand]
+    private async Task DiscoverAsync()
+    {
+        if (IsDiscovering) return;
+        try
+        {
+            IsDiscovering = true;
+            Message = "Looking for servers on your network…";
+            Discovered.Clear();
+            OnPropertyChanged(nameof(HasDiscovered));
+
+            var found = await _server.DiscoverServersAsync(
+                Kind == BackendKind.Subsonic ? null : Kind);
+            foreach (var server in found) Discovered.Add(server);
+            OnPropertyChanged(nameof(HasDiscovered));
+
+            Message = found.Count switch
+            {
+                0 => "Nothing answered. Enter the address instead.",
+                1 => "Found 1 server.",
+                _ => $"Found {found.Count} servers.",
+            };
+        }
+        catch (Exception ex)
+        {
+            Message = Explain(ex);
+        }
+        finally
+        {
+            IsDiscovering = false;
+        }
+    }
+
+    /// <summary>Fill the form in from a server that answered.</summary>
+    [RelayCommand]
+    private void UseDiscovered(DiscoveredServer? server)
+    {
+        if (server is null) return;
+        Kind = BackendKindExtensions.Parse(server.Kind);
+        ServerUrl = server.Url;
+        Message = $"{server.Name} — now your username and password.";
+    }
+
     /// <summary>
     /// The saved servers as the list draws them — brand mark, address, and which
     /// one has the tick.

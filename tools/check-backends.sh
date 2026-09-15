@@ -133,6 +133,35 @@ for shell in ios android desktop; do
   fi
 done
 
+# ---------------------------------------------------------------------------
+# Finding a server without being told where it is.
+#
+# Both local discoveries have lived in the shared core for as long as the
+# backends have — Plex's GDM sweep and Jellyfin's UDP probe — and for most of
+# that time neither had an FFI command, so only the Apple app, which reaches
+# into the modules directly, could offer them. Everywhere else you typed an
+# address copied out of a router's admin page. That is the shape
+# ARCHITECTURE.md calls a half-built feature, and it is invisible from every
+# other check here because the capability exists and compiles.
+echo
+discovery_surface() {
+  case "$1" in
+    ios) printf '%s\n' "$ROOT/Sources/MozzApp/Onboarding" ;;
+    android) printf '%s\n' "$ROOT/clients/android/app/src/main/java/com/thatcube/mozz/ui/Onboarding.kt" ;;
+    desktop) printf '%s\n' "$ROOT/clients/desktop/Views/MainWindow.axaml" ;;
+  esac
+}
+
+for shell in ios android desktop; do
+  file=$(discovery_surface "$shell")
+  if grep -qiE "discover" "$file"/* 2>/dev/null || grep -qiE "discover" "$file" 2>/dev/null; then
+    printf '%-8s offers servers found on the network\n' "$shell"
+  else
+    printf '%-8s CANNOT find servers on the network\n' "$shell"
+    status=1
+  fi
+done
+
 if [ "$mode" = "--check" ] && [ "$status" -ne 0 ]; then
   echo
   echo "An app is behind on servers."

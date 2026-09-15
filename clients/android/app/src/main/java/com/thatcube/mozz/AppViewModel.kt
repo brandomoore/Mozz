@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.thatcube.mozz.core.BackendKind
+import com.thatcube.mozz.core.DiscoveredServer
 import com.thatcube.mozz.core.MusicLibrary
 import com.thatcube.mozz.core.MozzLibrary
 import com.thatcube.mozz.core.MozzPlaybackSettings
@@ -274,6 +275,20 @@ class AppViewModel(
         if (kind == BackendKind.PLEX) beginPlexLink(canCancel)
         else _state.value = AppState.EnteringCredentials(kind, canCancel = canCancel)
     }
+
+    /**
+     * Ask the network which servers are on it.
+     *
+     * Suspending straight through to the core rather than held as state: the
+     * form owns the result, and a list of what answered three seconds ago is
+     * not something the app should remember once that screen is gone.
+     */
+    suspend fun discoverServers(kind: BackendKind): List<DiscoveredServer> =
+        runCatching {
+            // Subsonic has no discovery protocol of its own, so asking only for
+            // it would always find nothing — better to offer whatever replied.
+            server.discoverServers(kind.takeIf { it != BackendKind.SUBSONIC })
+        }.getOrDefault(emptyList())
 
     /** Back out of a credentials form or a Plex link, to the chooser. */
     fun chooseAnotherBackend() {

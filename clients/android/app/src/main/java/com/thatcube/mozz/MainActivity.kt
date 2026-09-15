@@ -136,6 +136,7 @@ class MainActivity : ComponentActivity() {
                 },
                 onBack = viewModel::chooseAnotherBackend,
                 onCancel = if (state.canCancel) viewModel::cancelAddServer else null,
+                onDiscover = { viewModel.discoverServers(state.kind) },
             )
 
             is AppState.Linking -> LinkingScreen(

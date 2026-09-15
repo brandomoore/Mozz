@@ -131,3 +131,19 @@ public sealed class PendingOpacityConverter : IValueConverter
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
         => throw new NotSupportedException();
 }
+
+/// <summary>
+/// The discovery button's label, which is its own progress indicator.
+///
+/// A sweep takes a few seconds and a button that says the same thing throughout
+/// reads as one that did nothing. Saying so in the label beats a spinner beside
+/// it: there is one thing happening and one control it belongs to.
+/// </summary>
+public sealed class DiscoverLabelConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is true ? "Looking…" : "Find servers on my network";
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
