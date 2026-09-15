@@ -85,6 +85,8 @@ struct SessionRequest: Decodable {
     var musicSectionID: String?
     var pinId: Int?
     var code: String?
+    /// Jellyfin Quick Connect's opaque handle, carried between its three steps.
+    var secret: String?
     // Pairing. The host owns the socket and pumps frames through these.
     var pairingId: String?
     var role: String?
@@ -2637,7 +2639,9 @@ let mozzSessionCommands = [
     "continuityQueueHash", "continuityLoad", "continuitySave",
     "suppressTrack", "suppressArtist",
     "unsuppressTrack", "unsuppressArtist", "suppressions",
-    "connect", "discoverServers", "plexPin", "plexPinCheck", "plexPinToken",
+    "connect", "discoverServers",
+    "quickConnectBegin", "quickConnectCheck", "quickConnectComplete",
+    "plexPin", "plexPinCheck", "plexPinToken", "plexServers",
     "plexHomeUsers", "plexHomeSwitch", "plexCompleteLogin",
     "attach", "libraries", "account",
     "sync", "syncStatus", "streamURL", "artworkURL",

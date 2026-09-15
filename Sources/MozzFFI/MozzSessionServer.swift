@@ -132,6 +132,26 @@ struct WireSyncPhaseDetail: Encodable {
 }
 
 /// A server that answered on the local network.
+/// Quick Connect's first step: the code a person types into Jellyfin, and the
+/// secret this device exchanges for a token once they have.
+struct WireQuickConnect: Encodable {
+    var secret: String
+    var code: String
+}
+
+struct WireQuickConnectState: Encodable {
+    var approved: Bool
+}
+
+/// One server on a Plex account, collapsed from its several addresses.
+struct WirePlexServer: Encodable {
+    var id: String
+    var name: String
+    var uri: String
+    var isLocal: Bool
+    var isRelay: Bool
+}
+
 struct WireDiscoveredServer: Encodable {
     var kind: String
     var name: String
@@ -312,6 +332,67 @@ func dispatchServerCommand(
 
     case "discoverServers":
         return try await discoverServers(request, session)
+
+    // MARK: Jellyfin Quick Connect
+    //
+    // Three steps rather than one blocking call, mirroring the Plex PIN flow
+    // both other clients already drive: the caller owns the polling, so it can
+    // show the code, cancel, and time out on its own terms. `awaitQuickConnect`
+    // exists in the core and is deliberately not what is exposed — a command
+    // that blocks for five minutes is not something a UI can hold.
+
+    case "quickConnectBegin":
+        guard let auth = try quickConnectAuthenticator(request) else {
+            return session.failure(request, "quickConnectBegin needs baseURL")
+        }
+        let quick = try await auth.initiateQuickConnect()
+        return session.success(request, WireQuickConnect(secret: quick.secret, code: quick.code))
+
+    case "quickConnectCheck":
+        guard let auth = try quickConnectAuthenticator(request) else {
+            return session.failure(request, "quickConnectCheck needs baseURL")
+        }
+        guard let secret = request.secret else {
+            return session.failure(request, "quickConnectCheck needs secret")
+        }
+        let approved = try await auth.isQuickConnectApproved(secret: secret)
+        return session.success(request, WireQuickConnectState(approved: approved))
+
+    case "quickConnectComplete":
+        guard let auth = try quickConnectAuthenticator(request) else {
+            return session.failure(request, "quickConnectComplete needs baseURL")
+        }
+        guard let secret = request.secret else {
+            return session.failure(request, "quickConnectComplete needs secret")
+        }
+        let authenticated = try await auth.completeQuickConnect(secret: secret)
+        // The same wire shape `connect` returns, so a client persists a
+        // Quick Connect session exactly as it persists a typed-password one.
+        return session.success(request, wire(authenticated))
+
+    case "plexServers":
+        guard let accountToken = request.accountToken else {
+            return session.failure(request, "plexServers needs accountToken")
+        }
+        // One entry per server, not per connection: plex.tv reports a local, a
+        // remote and often a relay address for the same box, and a picker
+        // listing the same server three times is a worse answer than one.
+        let auth = PlexAuthenticator(
+            clientInfo: clientInfo(),
+            clientIdentifier: request.clientIdentifier ?? fallbackClientIdentifier())
+        let connections = try await auth.discoverConnections(accountToken: accountToken)
+        var seen = Set<String>()
+        var servers: [WirePlexServer] = []
+        for connection in connections where !connection.clientIdentifier.isEmpty {
+            guard seen.insert(connection.clientIdentifier).inserted else { continue }
+            servers.append(WirePlexServer(
+                id: connection.clientIdentifier,
+                name: connection.serverName,
+                uri: connection.uri.absoluteString,
+                isLocal: connection.isLocal,
+                isRelay: connection.isRelay))
+        }
+        return session.success(request, servers)
 
     case "plexPin":
         let identifier = request.clientIdentifier ?? fallbackClientIdentifier()
@@ -636,6 +717,19 @@ private func discoverServers(
         return first ?? []
     }
     return session.success(request, servers)
+}
+
+/// A Jellyfin authenticator pointed at the address a Quick Connect request names.
+///
+/// Unlike the rest of sign-in there is no session yet and nothing attached, so
+/// the base URL has to come in with every step — which is also what lets a
+/// client begin on one server and be told about another without any state here.
+private func quickConnectAuthenticator(_ request: ServerRequest) throws -> JellyfinAuthenticator? {
+    guard let raw = request.baseURL, let baseURL = URL(string: raw) else { return nil }
+    return JellyfinAuthenticator(
+        baseURL: baseURL,
+        clientInfo: clientInfo(),
+        clientIdentifier: request.clientIdentifier ?? fallbackClientIdentifier())
 }
 
 // MARK: - Sign-in
