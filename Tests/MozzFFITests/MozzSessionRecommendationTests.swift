@@ -93,24 +93,25 @@ final class MozzSessionRecommendationTests: XCTestCase {
         XCTAssertEqual(generated["id"] as? Int, 1)
         XCTAssertEqual((generated["payload"] as? [String: Any])?["ok"] as? Bool, true)
 
-        let mixesResponse = try call(handle, ["cmd": "homeMixes"])
+        let mixesResponse = try call(handle, ["cmd": "homeMixes", "serverId": server.id])
         XCTAssertEqual(mixesResponse["ok"] as? Bool, true, "\(mixesResponse)")
         let mixes = try XCTUnwrap(mixesResponse["payload"] as? [[String: Any]])
-        let supermix = try XCTUnwrap(mixes.first { $0["id"] as? String == "supermix" })
+        let supermixId = "supermix@\(server.id)"
+        let supermix = try XCTUnwrap(mixes.first { $0["id"] as? String == supermixId })
         XCTAssertEqual(supermix["title"] as? String, "Supermix")
         XCTAssertEqual(supermix["kind"] as? String, "supermix")
         if let subtitle = supermix["subtitle"] { XCTAssertTrue(subtitle is String) }
         if let artworkKey = supermix["artworkKey"] { XCTAssertTrue(artworkKey is String) }
         XCTAssertNotNil(supermix["generatedAt"] as? Double)
 
-        let mix = try call(handle, ["cmd": "mix", "setId": "supermix"])
+        let mix = try call(handle, ["cmd": "mix", "setId": supermixId])
         let mixPayload = try XCTUnwrap(mix["payload"] as? [String: Any])
-        XCTAssertEqual(mixPayload["id"] as? String, "supermix")
+        XCTAssertEqual(mixPayload["id"] as? String, supermixId)
         XCTAssertEqual(mixPayload["title"] as? String, "Supermix")
         XCTAssertEqual(mixPayload["kind"] as? String, "supermix")
         XCTAssertNotNil(mixPayload["generatedAt"] as? Double)
 
-        let tracksResponse = try call(handle, ["cmd": "mixTracks", "setId": "supermix"])
+        let tracksResponse = try call(handle, ["cmd": "mixTracks", "setId": supermixId])
         let tracks = try XCTUnwrap(tracksResponse["payload"] as? [[String: Any]])
         XCTAssertGreaterThanOrEqual(tracks.count, 8)
         assertWireTrack(tracks[0])
@@ -125,20 +126,21 @@ final class MozzSessionRecommendationTests: XCTestCase {
         let generated = try call(handle, ["cmd": "generateMozzWeekly", "serverId": server.id, "limit": 6, "seed": 11])
         XCTAssertEqual(generated["ok"] as? Bool, true, "\(generated)")
         let set = try XCTUnwrap(generated["payload"] as? [String: Any])
-        XCTAssertEqual(set["id"] as? String, "mozz-weekly")
+        XCTAssertEqual(set["id"] as? String, "mozz-weekly@" + server.id)
         XCTAssertNotNil(set["title"] as? String)
         XCTAssertEqual(set["kind"] as? String, "forgotten")
         XCTAssertNotNil(set["generatedAt"] as? Double)
 
-        let tracksResponse = try call(handle, ["cmd": "mozzWeeklyTracks"])
+        let tracksResponse = try call(handle, ["cmd": "mozzWeeklyTracks", "serverId": server.id])
         let tracks = try XCTUnwrap(tracksResponse["payload"] as? [[String: Any]])
         XCTAssertFalse(tracks.isEmpty)
         assertWireTrack(tracks[0])
 
-        let itemsResponse = try call(handle, ["cmd": "mozzWeeklyItems"])
+        let itemsResponse = try call(handle, ["cmd": "mozzWeeklyItems", "serverId": server.id])
         let items = try XCTUnwrap(itemsResponse["payload"] as? [[String: Any]])
         let item = try XCTUnwrap(items.first)
-        XCTAssertEqual(item["setId"] as? String, "mozz-weekly")
+        // Items follow their set, and a set's id names its server.
+        XCTAssertEqual(item["setId"] as? String, "mozz-weekly@" + server.id)
         XCTAssertNotNil(item["trackRef"] as? String)
         XCTAssertNotNil(item["rank"] as? Int)
         XCTAssertNotNil(item["score"] as? Double)

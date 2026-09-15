@@ -324,17 +324,22 @@ final class RecommendationServiceTests: XCTestCase {
 
         let mixes = try await service.homeMixes(serverId: server.id)
         let ids = mixes.map(\.id)
-        XCTAssertTrue(ids.contains("supermix"))
-        XCTAssertTrue(ids.contains("daily-mix-1"))
-        XCTAssertTrue(ids.contains("artist-mix-1"))
-        XCTAssertTrue(ids.contains("replay-mix"))
-        XCTAssertEqual(mixes.first?.id, "supermix", "supermix sorts to the front")
+        // A set's row id names its server, so two servers can each have their
+        // own without the second overwriting the first.
+        func setId(_ name: String) -> String {
+            RecommendationService.setId(name, serverId: server.id)
+        }
+        XCTAssertTrue(ids.contains(setId("supermix")))
+        XCTAssertTrue(ids.contains(setId("daily-mix-1")))
+        XCTAssertTrue(ids.contains(setId("artist-mix-1")))
+        XCTAssertTrue(ids.contains(setId("replay-mix")))
+        XCTAssertEqual(mixes.first?.id, setId("supermix"), "supermix sorts to the front")
 
-        let superTracks = try await service.tracks(forSetId: "supermix")
+        let superTracks = try await service.tracks(forSetId: setId("supermix"))
         XCTAssertGreaterThanOrEqual(superTracks.count, 8)
         XCTAssertFalse(superTracks.contains { $0.remoteId == "jazz1" }, "no Jazz affinity → excluded")
 
-        let artistMix = mixes.first { $0.id == "artist-mix-1" }
+        let artistMix = mixes.first { $0.id == setId("artist-mix-1") }
         XCTAssertTrue(artistMix?.title.hasSuffix("Mix") ?? false, "artist mix titled '<name> Mix'")
     }
 
@@ -367,7 +372,8 @@ final class RecommendationServiceTests: XCTestCase {
         let service = RecommendationService(store: store, now: { now })
         try await service.generateHomeMixes(serverId: server.id, seed: 3)
 
-        let replay = try await service.tracks(forSetId: "replay-mix")
+        let replay = try await service.tracks(
+            forSetId: RecommendationService.setId("replay-mix", serverId: server.id))
         XCTAssertGreaterThanOrEqual(replay.count, 8)
         XCTAssertEqual(replay.first?.remoteId, "t0", "most-played track leads the Replay mix")
     }
