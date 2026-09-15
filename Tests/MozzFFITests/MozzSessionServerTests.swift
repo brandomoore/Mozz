@@ -20,6 +20,77 @@ import MozzSubsonic
 /// on when its user has not signed in yet.
 final class MozzSessionServerTests: XCTestCase {
 
+    // MARK: Discovery
+
+    /// Asking which servers are on this network is answerable without one.
+    ///
+    /// Subsonic has no discovery protocol of its own — there is nothing on the
+    /// wire to ask — so narrowing to it must come back as an empty list rather
+    /// than sweeping the network for something that cannot reply, or failing.
+    /// That is also what makes this deterministic: no packets leave the machine.
+    func testDiscoveringSubsonicFindsNothingBecauseThereIsNothingToAsk() throws {
+        let path = try makeLibrary()
+        let handle = try open(path)
+        defer { _ = mozz_session_close(handle) }
+
+        let response = try call(handle, ["cmd": "discoverServers", "kind": "subsonic", "size": 1])
+
+        XCTAssertEqual(response["ok"] as? Bool, true, "\(response)")
+        XCTAssertEqual((response["payload"] as? [[String: Any]])?.count, 0)
+    }
+
+    /// The command exists and answers in the shape clients decode.
+    ///
+    /// What actually answers depends on the network this runs on, so the
+    /// assertion is about the envelope rather than the contents: a list, whose
+    /// every entry carries the three fields a sign-in form needs. A CI machine
+    /// with no Plex or Jellyfin on it correctly returns none.
+    func testDiscoveryAnswersWithAWellFormedList() throws {
+        let path = try makeLibrary()
+        let handle = try open(path)
+        defer { _ = mozz_session_close(handle) }
+
+        // One second: this sweeps a subnet, and a test is not the place to wait.
+        let response = try call(handle, ["cmd": "discoverServers", "size": 1])
+
+        XCTAssertEqual(response["ok"] as? Bool, true, "\(response)")
+        let servers = try XCTUnwrap(response["payload"] as? [[String: Any]])
+        for server in servers {
+            XCTAssertNotNil(server["kind"] as? String)
+            XCTAssertNotNil(server["name"] as? String)
+            let url = try XCTUnwrap(server["url"] as? String)
+            XCTAssertNotNil(URL(string: url), "a discovered address must be usable")
+        }
+    }
+
+    /// Discovery answers within its own budget, whatever the network does.
+    ///
+    /// It cannot be left to the probes: both sweep a subnet with a blocking
+    /// socket, and a `sendto` to an unroutable broadcast address can simply sit
+    /// there. `mozz_session_call` is synchronous, so an overrunning sweep holds
+    /// the calling thread and a client is looking at a frozen sign-in screen
+    /// rather than a slow one — which is exactly how this was found, as a test
+    /// run that never finished.
+    func testDiscoveryReturnsWithinItsBudget() throws {
+        let path = try makeLibrary()
+        let handle = try open(path)
+        defer { _ = mozz_session_close(handle) }
+
+        let started = Date()
+        _ = try call(handle, ["cmd": "discoverServers", "size": 1])
+        let elapsed = Date().timeIntervalSince(started)
+
+        // One second asked for, one of grace, and a wide margin for a loaded
+        // machine — the property under test is "bounded", not "prompt".
+        XCTAssertLessThan(elapsed, 12, "discovery must not outlive its deadline")
+    }
+
+    /// The name has to be in the list, or a client gets "unknown command" and no
+    /// hint that it is one capital letter away from working.
+    func testDiscoveryIsListedAmongTheCommands() {
+        XCTAssertTrue(mozzSessionCommands.contains("discoverServers"))
+    }
+
     // MARK: Helpers
 
     private func makeLibrary() throws -> String {

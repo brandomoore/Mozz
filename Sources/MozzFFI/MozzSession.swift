@@ -2637,7 +2637,7 @@ let mozzSessionCommands = [
     "continuityQueueHash", "continuityLoad", "continuitySave",
     "suppressTrack", "suppressArtist",
     "unsuppressTrack", "unsuppressArtist", "suppressions",
-    "connect", "plexPin", "plexPinCheck", "plexPinToken",
+    "connect", "discoverServers", "plexPin", "plexPinCheck", "plexPinToken",
     "plexHomeUsers", "plexHomeSwitch", "plexCompleteLogin",
     "attach", "libraries", "account",
     "sync", "syncStatus", "streamURL", "artworkURL",

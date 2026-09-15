@@ -131,6 +131,17 @@ struct WireSyncPhaseDetail: Encodable {
     var isComplete: Bool
 }
 
+/// A server that answered on the local network.
+struct WireDiscoveredServer: Encodable {
+    var kind: String
+    var name: String
+    /// The address that actually answered, ready to sign in against.
+    var url: String
+    /// The server's own identifier where it announces one, so a client can tell
+    /// a server it already has from a new one.
+    var serverId: String?
+}
+
 struct WireLibrary: Encodable {
     var id: String
     var name: String
@@ -298,6 +309,9 @@ func dispatchServerCommand(
 
     case "connect":
         return try await connect(request, session)
+
+    case "discoverServers":
+        return try await discoverServers(request, session)
 
     case "plexPin":
         let identifier = request.clientIdentifier ?? fallbackClientIdentifier()
@@ -545,6 +559,83 @@ func dispatchServerCommand(
     default:
         return nil
     }
+}
+
+/// Servers answering on this network, so signing in can offer them rather than
+/// ask for an address.
+///
+/// Both discoveries have lived in the core for as long as the backends have —
+/// Plex's GDM sweep and Jellyfin's UDP probe — and neither had a command, so
+/// only the Apple app, which reaches into the modules directly, could offer
+/// them. Everywhere else you typed an address out of your router's admin page.
+/// That is the shape ARCHITECTURE.md calls a half-built feature.
+///
+/// One command for both, because "what is on my network" is one question a
+/// person asks; `kind` narrows it when a caller already knows which backend it
+/// wants. The probes run concurrently and the whole thing is bounded by the
+/// timeout, so the caller waits once rather than once per backend.
+private func discoverServers(
+    _ request: ServerRequest,
+    _ session: SessionContext
+) async throws -> String {
+    // A few seconds is the useful range: long enough for a sleeping server to
+    // answer, short enough that nobody watches a spinner wondering.
+    let timeout = TimeInterval(min(max(request.size ?? 3, 1), 15))
+    let wanted = request.kind.flatMap(BackendKind.init(rawValue:))
+
+    // This command must never outlive its own budget, and the probes cannot be
+    // relied on to enforce it: both sweep a subnet with a blocking socket, and
+    // a `sendto` to an unroutable broadcast address can sit there. That is not
+    // a test-only concern — `mozz_session_call` is synchronous, so a sweep that
+    // overruns holds the calling thread, and a client would be looking at a
+    // frozen sign-in screen rather than a slow one. Racing the whole thing
+    // against the deadline bounds it whatever the sockets do; a probe still
+    // running is abandoned, having only ever written to a local buffer.
+
+    let probePlex: @Sendable () async -> [WireDiscoveredServer] = {
+        guard wanted == nil || wanted == .plex else { return [] }
+        return await PlexLocalDiscovery().discover(timeout: timeout).map {
+            WireDiscoveredServer(
+                kind: BackendKind.plex.rawValue,
+                name: $0.name,
+                url: "http://\($0.host):\($0.port)",
+                serverId: $0.machineIdentifier)
+        }
+    }
+
+    let probeJellyfin: @Sendable () async -> [WireDiscoveredServer] = {
+        guard wanted == nil || wanted == .jellyfin else { return [] }
+        var found: [WireDiscoveredServer] = []
+        for await server in JellyfinServerDiscovery().discover(timeout: timeout) {
+            found.append(WireDiscoveredServer(
+                kind: BackendKind.jellyfin.rawValue,
+                name: server.name,
+                url: server.baseURL.absoluteString,
+                serverId: server.id))
+        }
+        return found
+    }
+
+    // Subsonic has no discovery protocol of its own — there is nothing to ask —
+    // so a Subsonic-only request correctly comes back empty rather than sweeping
+    // the network for something that cannot answer.
+    let servers = await withTaskGroup(of: [WireDiscoveredServer]?.self) { group in
+        group.addTask {
+            async let plex = probePlex()
+            async let jellyfin = probeJellyfin()
+            return await plex + jellyfin
+        }
+        group.addTask {
+            // A slice of grace over the probes' own deadline, so a sweep that
+            // finishes normally is never cut off by a rounding difference.
+            try? await Task.sleep(nanoseconds: UInt64((timeout + 1) * 1_000_000_000))
+            return nil
+        }
+        let first = await group.next() ?? nil
+        group.cancelAll()
+        return first ?? []
+    }
+    return session.success(request, servers)
 }
 
 // MARK: - Sign-in
