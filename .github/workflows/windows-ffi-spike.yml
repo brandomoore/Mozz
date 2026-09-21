@@ -134,13 +134,45 @@ jobs:
             -Xcc -I"$env:SQLITE_ROOT\include" `
             -Xlinker "/LIBPATH:$env:SQLITE_ROOT\lib"
 
+      # The core links the Rust audio engine, so its static archive has to exist
+      # before Stage 2 links a product. Stage 1 above builds library targets and
+      # links nothing, which is why it passed while this was missing — a useful
+      # reminder that the two stages are separated on purpose. Without this the
+      # build dies at
+      # "lld-link: error: could not open 'mozz_audio_ffi.lib'" — the fourth
+      # workflow found today missing a step the engine needs, after cbindgen in
+      # core-and-ios.yml and the xcframework in this file's own macOS control
+      # job.
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the audio engine
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Push-Location audio
+          cargo build --release -p mozz_audio_ffi
+          if ($LASTEXITCODE -ne 0) { Write-Error "cargo build failed"; exit 1 }
+          Pop-Location
+          $lib = "audio\target\release\mozz_audio_ffi.lib"
+          if (-not (Test-Path $lib)) { Write-Error "$lib was not produced"; exit 1 }
+          # A directory holding the static archive and nothing else. cargo emits
+          # the DLL and its import library beside it, and pointing -LIBPATH at all
+          # three invites the linker to bind the import library instead — which
+          # links without complaint and then cannot be loaded.
+          $link = Join-Path $env:RUNNER_TEMP "audiolink"
+          New-Item -ItemType Directory -Force -Path $link | Out-Null
+          Copy-Item $lib $link -Force
+          "MOZZ_AUDIO_LIB=$link" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       # Stage 2 — does @_cdecl give us a real, linkable DLL?
       - name: Stage 2 — build the FFI shared library
         shell: pwsh
         run: |
           swift build -c release --product MozzFFI `
             -Xcc -I"$env:SQLITE_ROOT\include" `
-            -Xlinker "/LIBPATH:$env:SQLITE_ROOT\lib"
+            -Xlinker "/LIBPATH:$env:SQLITE_ROOT\lib" `
+            -Xlinker "/LIBPATH:$env:MOZZ_AUDIO_LIB"
 
       - name: Locate MozzFFI.dll
         shell: pwsh
