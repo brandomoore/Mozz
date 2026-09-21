@@ -21,7 +21,7 @@ Three files know that:
 Everything else is ordinary Kotlin.
 
 See [`../../docs/adr/ADR-0014-android-support.md`](../../docs/adr/ADR-0014-android-support.md)
-for why it is built this way, and [`PLAN.md`](PLAN.md) for what is and is not in v1.
+for why it is built this way, and [`../../docs/android-v1-plan.md`](../../docs/android-v1-plan.md) for what is and is not in v1.
 
 ## Installing it
 
