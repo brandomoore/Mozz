@@ -168,7 +168,18 @@ Package.swift   the MozzKit package graph
 
 ## Releases
 
-iOS releases go through [fastlane](https://fastlane.tools) with an App Store Connect
+**Android, Windows, macOS and Linux** ship from a tag. Bump `MARKETING_VERSION`
+in `project.yml`, add a `CHANGELOG.md` section, push a `vYYYY.M.D` tag, and
+`.github/workflows/release.yml` builds every platform and attaches the files to
+a GitHub Release. The full runbook — including the Android signing keystore and
+what is still manual — is [`docs/RELEASING.md`](docs/RELEASING.md).
+
+That one version number is shared: `tools/version-info.py` resolves it from
+`project.yml` for the desktop and Android builds, and the Apple project reads
+the same field. The release workflow refuses to run if a tag disagrees with it.
+
+**iOS** is not part of that workflow, because Apple does not allow an app to be
+installed from a download. It goes through [fastlane](https://fastlane.tools) with an App Store Connect
 API key (no Apple ID password, no 2FA prompt). Lanes are `build`, `beta`, and
 `release`; `fastlane beta --env fastlane` builds and uploads to TestFlight.
 Credentials come from a gitignored `.env.fastlane` — copy

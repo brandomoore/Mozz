@@ -1,8 +1,8 @@
 # Mozz — Architecture (Candidate B: offline-first, normalized local DB as the single source of truth)
 
 Mozz is a free/open-source (GPL-3.0) music client for **Plex, Jellyfin and Subsonic**
-behind one abstraction. It began as an iOS-17 SwiftUI app and now also ships desktop
-clients for **Windows, macOS and Linux**, with the same core proven to run on **Android**.
+behind one abstraction. It began as an iOS-17 SwiftUI app and now also ships an
+**Android** client and desktop clients for **Windows, macOS and Linux**.
 This document is the design record for **Candidate B** of the foundation bake-off; §0
 covers what is shared across platforms and what deliberately is not.
 
@@ -22,8 +22,8 @@ never holds more than a page.
 
 ## 0. What is shared across platforms, and what is not
 
-Mozz runs on iOS, Windows, macOS, Linux and (proven, not yet shipped) Android. It does so
-without reimplementing anything, because the split is drawn in one place and held there:
+Mozz runs on iOS, iPadOS, Android, Windows, macOS and Linux. It does so without
+reimplementing anything, because the split is drawn in one place and held there:
 
 > **Everything except the user interface and the audio sink is one shared core,
 > compiled per platform and reached over a C ABI.**
@@ -40,9 +40,10 @@ Measured, by `wc -l` on `Sources/`:
 | **Shared core** — `MozzCore`, `MozzNetworking`, `MozzDatabase`, `MozzPlex`, `MozzJellyfin`, `MozzSubsonic`, `MozzSync`, `MozzHistory`, `MozzContinuity`, `MozzRecommend`, `MozzEnrichment` | **18,742** | every platform |
 | `MozzFFI` — the C ABI facade over it | 2,921 | every non-Apple platform |
 | `MozzPlayback` — AVFoundation engine | 2,715 | Apple only — **to be replaced** by the shared audio core |
-| `MozzDownloads` — background `URLSession` | 463 | Apple only — **a gap, not a design**; downloads belong everywhere |
+| `MozzDownloads` — background `URLSession` | 463 | Apple only — the *Apple shell's* transfer layer; the download **model** is in the core and reached over the FFI, so Android and the desktop have downloads of their own |
 | `MozzApp` — SwiftUI | 21,891 | Apple only, **correctly** |
-| `clients/desktop` — C# / Avalonia UI, audio and artwork | 13,391 | Windows, macOS, Linux |
+| `clients/android` — Kotlin / Compose UI, audio and the JNI shim | 21,127 | Android |
+| `clients/desktop` — C# / Avalonia UI, audio and artwork | 23,597 | Windows, macOS, Linux |
 
 So the database, all three server clients, sync, search, listening history, cross-device
 continuity, recommendations and artwork enrichment are written once.
@@ -106,9 +107,11 @@ guarantee two subtly different apps.
             │ (gate — a broken core fails here) │
             ├───────────────┬──────────────┬────┘
             ▼               ▼              ▼
-    Windows FFI spike  Android FFI    Desktop app
-    (x64, FTS5/HPKE/   (arm64 + x86,  (Windows, macOS,
-     continuity)        emulator run)  Linux artifacts)
+    Windows FFI spike  Android FFI    Desktop app      Release
+    (x64, FTS5/HPKE/   (arm64 + x86,  (Windows, macOS,  (on a tag:
+     continuity)        emulator run)  Linux artifacts)   every artifact
+                                                          to a GitHub
+                                                          Release)
 ```
 
 The `spec/` directory holds **language-neutral golden fixtures** — the continuity queue
@@ -146,11 +149,18 @@ must exist on all of them. That is the whole point of carrying a shared core: th
 moment a feature lands on one platform and not the others, the core has stopped
 paying for itself and the apps have started diverging.
 
-That rule is where this is going, and it is not yet where it is. Android does not
-exist, the web player does not exist, and the desktop is younger than the phone.
-While a platform is catching up it is *behind*, not *exempt*: a feature may land
-on one client first, but it is not finished until every client has it. Once the
-platforms are level the rule stops being a direction and becomes a gate.
+That rule is now close to where it is. Android and the desktop both exist and both
+speak all three backends; the web player does not exist, and both younger clients
+still trail the phone in places. While a platform is catching up it is *behind*,
+not *exempt*: a feature may land on one client first, but it is not finished until
+every client has it.
+
+`tools/check-backends.sh` is where that stopped being a promise. It asks the
+sign-in surface of each shell which backends it offers, and whether a person can
+add, switch and leave servers, find one on the network, and use Quick Connect and
+the Plex picker — because a capability that compiles and is unreachable from the
+UI is the failure mode this section exists to describe, and every other check in
+the repo was green while Android offered a single "Connect Plex" button.
 
 Concretely, a feature is finished when the logic lives once in `Sources/`, the
 C ABI in `Sources/MozzFFI` exposes it, and every UI shell presents it. A feature
@@ -179,7 +189,8 @@ CI runs all three rather than trusting the machine the code was written on.
 
 One SPM package (`MozzKit`) with one library per concern. Two consumers sit on top of it:
 an XcodeGen-generated iOS app target that links `MozzApp`, and `MozzFFI` — a dynamic library
-exposing a C ABI that the Windows/macOS/Linux desktop client and (in future) Android drive.
+exposing a C ABI that the Windows/macOS/Linux desktop client and the Android client drive
+(Android through the small JNI shim in `clients/android/core/src/main/cpp/mozz_jni.c`).
 
 Dependencies point strictly downward. The domain core and the providers never import UI, the
 providers never import the database, and nothing below the platform layer imports a

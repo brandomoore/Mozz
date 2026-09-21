@@ -23,6 +23,14 @@ Everything else is ordinary Kotlin.
 See [`../../docs/adr/ADR-0014-android-support.md`](../../docs/adr/ADR-0014-android-support.md)
 for why it is built this way, and [`PLAN.md`](PLAN.md) for what is and is not in v1.
 
+## Installing it
+
+**If you just want to run Mozz**, take the APK from the
+[Releases page](https://github.com/thatcube/Mozz/releases) — the `arm64-v8a` one
+for any phone or tablet, the `x86_64` one for an emulator.
+[`docs/INSTALL.md`](../../docs/INSTALL.md) has the steps. Building from source is
+below and needs a cross-compiling Swift toolchain.
+
 ## Building it
 
 You need the Android SDK (platform 36, NDK r27d) and the Swift Android SDK. The

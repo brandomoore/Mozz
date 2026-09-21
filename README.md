@@ -23,6 +23,17 @@ subway. Mozz is built for both, and it does not push you toward either.
 
 **One app for your music, wherever it lives. Free forever. Open source.**
 
+## Download
+
+Builds for **Android, Windows, macOS and Linux** are on the
+[Releases page](https://github.com/thatcube/Mozz/releases). Per-platform steps —
+including the first-run warnings on Windows and macOS — are in
+[`docs/INSTALL.md`](docs/INSTALL.md).
+
+**iPhone and iPad** ship through TestFlight and the App Store rather than as a
+download, because Apple requires it; you can also build it yourself with Xcode
+(see [`CONTRIBUTING.md`](CONTRIBUTING.md)).
+
 ---
 
 ## Who it's for
@@ -47,8 +58,8 @@ not an iPhone feature or a desktop feature — it's a Mozz feature.
 | In the car | CarPlay | Android Auto | — |
 | Voice assistant & widgets | Siri, HomePod, widgets | — | — |
 
-The Android and desktop clients are younger than the iPhone one and are built from
-source today — see [`clients/android/README.md`](clients/android/README.md) and
+The Android and desktop clients are younger than the iPhone one. Developer notes
+for each are in [`clients/android/README.md`](clients/android/README.md) and
 [`clients/desktop/README.md`](clients/desktop/README.md).
 
 ## Features
@@ -145,8 +156,8 @@ Glass player finish on newer iOS.
 
 ## Getting started
 
-1. Install Mozz — see [building it yourself](#contributing--development) while a public
-   release is in progress.
+1. [Download Mozz](https://github.com/thatcube/Mozz/releases) for your platform and
+   install it — [`docs/INSTALL.md`](docs/INSTALL.md) has the per-platform steps.
 2. Choose your server type: Plex, Jellyfin, or Subsonic. Mozz offers any it finds on
    your network.
 3. Sign in the way that server expects and pick the libraries you want.
@@ -171,8 +182,8 @@ help.
 ## Contributing & development
 
 Mozz is open source and contributions are welcome. Build instructions, the code
-layout, testing, and how releases work live in
-[`CONTRIBUTING.md`](CONTRIBUTING.md); the deeper design rationale is in
+layout and testing live in [`CONTRIBUTING.md`](CONTRIBUTING.md), and cutting a
+release is [`docs/RELEASING.md`](docs/RELEASING.md); the deeper design rationale is in
 [`ARCHITECTURE.md`](ARCHITECTURE.md) and the notes and decision records under
 [`docs/`](docs).
 

@@ -20,6 +20,11 @@ Everything else is ordinary C#.
 
 ## Getting a build
 
+**If you just want to run Mozz**, take a release rather than a CI artifact:
+the [Releases page](https://github.com/thatcube/Mozz/releases) has a file per
+platform and [`docs/INSTALL.md`](../../docs/INSTALL.md) has the steps. The rest
+of this section is for development builds of unreleased commits.
+
 Every push builds all three platforms. Download from the **Desktop app**
 workflow run:
 
