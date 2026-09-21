@@ -60,14 +60,20 @@ Set these under **Settings → Secrets and variables → Actions**.
 ### Creating the Android keystore (once, ever)
 
 ```bash
-keytool -genkeypair -v -keystore mozz-release.jks \
-  -keyalg RSA -keysize 4096 -validity 10000 -alias mozz
+tools/make-release-keystore.sh
 ```
+
+Do not reach for a bare `keytool`. macOS ships no Java, so it fails with
+"Unable to locate a Java Runtime" and points at java.com — the wrong answer,
+since a JDK is already on the machine inside Android Studio. The script finds
+it, the same problem one tool over from the `JAVA_HOME` that Gradle needs. It
+prompts for the passwords itself, so they never appear in a shell argument or a
+log, and it refuses to overwrite an existing keystore.
 
 Then, to get it into the secret:
 
 ```bash
-base64 -i mozz-release.jks | pbcopy
+base64 -i ~/Documents/mozz-release.jks | pbcopy
 ```
 
 **Back this file up somewhere you will still have in five years, along with both

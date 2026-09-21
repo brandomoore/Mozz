@@ -92,8 +92,7 @@ android {
     // To create one (maintainer, once — keep the file and the passwords safe;
     // losing them means no existing install can ever be updated):
     //
-    //   keytool -genkeypair -v -keystore mozz-release.jks \
-    //     -keyalg RSA -keysize 4096 -validity 10000 -alias mozz
+    //   tools/make-release-keystore.sh
     //
     // Then set MOZZ_KEYSTORE (path), MOZZ_KEYSTORE_PASSWORD, MOZZ_KEY_ALIAS and
     // MOZZ_KEY_PASSWORD in the environment.
