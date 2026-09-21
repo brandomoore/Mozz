@@ -15,6 +15,7 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 COUNTER_FILE = REPO / ".mozz-dev-build"
+PROJECT_YML = REPO / "project.yml"
 
 
 def run_git(*args: str) -> str | None:
@@ -35,6 +36,28 @@ def run_git(*args: str) -> str | None:
 
 def calver(today: dt.date) -> str:
     return f"{today.year}.{today.month}.{today.day}"
+
+
+def declared_marketing_version() -> str | None:
+    """The version the repo says it is, from `project.yml`.
+
+    There is one release, not one per platform, and for a while there were
+    three: `project.yml` said 2026.7.8, this script handed the desktop whatever
+    today's date was, and Android was still on a hardcoded 0.1.0. Three numbers
+    for one tag is not a cosmetic problem — it is what makes a bug report
+    impossible to place, because "Mozz 0.1.0" names no commit.
+
+    So the human-edited field in `project.yml` is the source, and every platform
+    derives from it. CalVer-from-today remains the fallback for a tree without
+    that file (a source tarball, a partial checkout), where a date is at least
+    honest about being a guess.
+    """
+    try:
+        text = PROJECT_YML.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r"^\s*MARKETING_VERSION:\s*[\"']?([^\"'\s#]+)", text, re.MULTILINE)
+    return match.group(1) if match else None
 
 
 def dirty_build_number(base: str) -> str:
@@ -74,7 +97,7 @@ def numeric_version(marketing: str, build: str) -> str:
 def resolve() -> dict[str, str]:
     marketing = os.environ.get("MOZZ_MARKETING_VERSION", "").strip()
     if not marketing:
-        marketing = calver(dt.datetime.now().date())
+        marketing = declared_marketing_version() or calver(dt.datetime.now().date())
 
     build = os.environ.get("MOZZ_BUILD_NUMBER", "").strip()
     if not build:
