@@ -198,6 +198,29 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
+      # The core links the Rust audio engine, and on Apple it links it as an
+      # xcframework that has to be built first. Without these three steps
+      # `swift build` stops at "local binary target 'MozzAudioFFI' ... does not
+      # contain a binary artifact", which is what this job has done on every run
+      # since the engine landed — the same shape as the missing cbindgen in
+      # core-and-ios.yml, in a second workflow.
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cbindgen
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cbindgen
+          key: cbindgen-0.29.4-${{ runner.os }}
+
+      - name: Install cbindgen
+        run: |
+          command -v cbindgen >/dev/null 2>&1 \
+            || cargo install cbindgen --version 0.29.4 --locked
+
+      - name: Build the audio engine
+        run: tools/build-audio-xcframework.sh
+
       - name: Build the FFI shared library
         run: >
           tools/with-apple-build-lease.sh mozz/ci-windows-control-swift --
