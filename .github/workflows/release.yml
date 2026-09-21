@@ -130,7 +130,13 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: swift-actions/setup-swift@v2
+      # SwiftyLab's, not swift-actions'. The host toolchain has to match the
+      # Android SDK bundle pinned below — a 6.1.2 compiler cannot use a 6.3.3
+      # SDK — and swift-actions/setup-swift is only proven here at 6.1.2, which
+      # is what the desktop Linux job pins it to. SwiftyLab's resolves releases
+      # from swift.org and is already the action this repo trusts for the Linux
+      # path that one does not publish.
+      - uses: SwiftyLab/setup-swift@latest
         with:
           swift-version: "6.3.3"
 
