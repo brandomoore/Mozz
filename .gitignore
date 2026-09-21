@@ -67,3 +67,11 @@ audio/target/
 
 # Fixture generator build output
 tools/genfix/.build/
+
+# Android release signing. A committed keystore is a published private key:
+# anyone holding it can sign an APK that Android will install as an update over
+# a real Mozz install. Rotating it is not possible — the key IS the app's
+# identity — so the only defence is that it never lands here.
+*.jks
+*.keystore
+keystore.properties
