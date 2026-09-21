@@ -33,8 +33,31 @@ name: Desktop app
 #      music works", one runtime install prompt is one too many.
 
 on:
+  # Callable, so the release workflow builds the SAME artifacts by the same
+  # steps rather than a second copy of them. The Swift-runtime bundling below is
+  # several hundred lines of careful, platform-specific work; a duplicate of it
+  # in another file would drift, and the first sign of the drift would be a
+  # downloaded build that will not start on a machine without a toolchain.
+  workflow_call:
+    inputs:
+      version:
+        description: >-
+          Marketing version to stamp into the binaries and the package names.
+          Omitted for ordinary CI runs, which are not releases and say so by
+          carrying a commit sha instead.
+        type: string
+        required: false
+        default: ""
   workflow_dispatch:
   push:
+    # Branch pushes only. A tag push would otherwise match these paths and start
+    # a SECOND desktop build beside the one the release workflow calls — and,
+    # worse, the two would share the concurrency group below (both keyed on the
+    # same tag ref) so `cancel-in-progress` would have one kill the other. Which
+    # one died would be a coin toss, and losing the release's copy means a
+    # release with no desktop downloads.
+    tags-ignore:
+      - "**"
     paths:
       - "clients/desktop/**"
       - "clients/desktop-tests/**"
@@ -64,7 +87,13 @@ jobs:
     timeout-minutes: 75
 
     steps:
+      # Full history: the build number is `git rev-list --count HEAD`, and on
+      # the default depth-1 clone that is 1. The Android job counts the real
+      # history, so a shallow desktop checkout meant one release stamping two
+      # different build numbers into its own apps.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Swift
         uses: compnerd/gha-setup-swift@main
@@ -389,7 +418,8 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $version = "0.1.0-$($env:GITHUB_SHA.Substring(0,7))"
+          $version = if ("${{ inputs.version }}") { "${{ inputs.version }}" }
+                     else { "0.1.0-$($env:GITHUB_SHA.Substring(0,7))" }
           Compress-Archive -Path publish\win-x64\* -DestinationPath "Mozz-win-x64-$version.zip" -Force
           $size = [math]::Round((Get-Item "Mozz-win-x64-$version.zip").Length / 1MB, 1)
           Write-Host "Mozz-win-x64-$version.zip ($size MB)"
@@ -407,7 +437,13 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      # Full history: the build number is `git rev-list --count HEAD`, and on
+      # the default depth-1 clone that is 1. The Android job counts the real
+      # history, so a shallow desktop checkout meant one release stamping two
+      # different build numbers into its own apps.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -507,10 +543,30 @@ jobs:
           done
           echo "libMozzFFI.dylib exports the session ABI"
 
+      # A real .app, not the publish folder.
+      #
+      # This job used to zip `publish/osx-arm64` directly, so "the macOS
+      # download" was a directory of DLLs with a bare executable among them:
+      # no icon, no Dock presence, nothing to drag to Applications, and a
+      # Terminal window on double-click. The bundler is shared with
+      # `tools/build-macos-app.sh` so the Info.plist has one definition — in
+      # particular NSLocalNetworkUsageDescription, without which every
+      # connection to a LAN media server fails as "No route to host".
+      #
+      # `ditto` rather than `zip`, because the bundle is code-signed and zip
+      # does not preserve the symlinks and extended attributes a signature
+      # is computed over — an unzipped bundle would fail its own check.
       - name: Package
         run: |
-          version="0.1.0-${GITHUB_SHA:0:7}"
-          ditto -c -k --sequesterRsrc --keepParent publish/osx-arm64 "Mozz-osx-arm64-${version}.zip"
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          [ -n "$version" ] || version="0.1.0-${GITHUB_SHA:0:7}"
+          MOZZ_MARKETING_VERSION="$version" \
+            tools/make-macos-bundle.sh --stage publish/osx-arm64 --out build/Mozz.app
+          codesign --verify --deep --strict build/Mozz.app \
+            && echo "bundle signature verifies" \
+            || echo "::warning::bundle signature did not verify"
+          ditto -c -k --sequesterRsrc --keepParent build/Mozz.app "Mozz-osx-arm64-${version}.zip"
           echo "PACKAGE=Mozz-osx-arm64-${version}.zip" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
@@ -540,7 +596,13 @@ jobs:
             runner: ubuntu-24.04-arm
 
     steps:
+      # Full history: the build number is `git rev-list --count HEAD`, and on
+      # the default depth-1 clone that is 1. The Android job counts the real
+      # history, so a shallow desktop checkout meant one release stamping two
+      # different build numbers into its own apps.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Two actions for one toolchain: swift-actions/setup-swift does not
       # publish an aarch64 Linux path, and SwiftyLab's does. The x64 job keeps
@@ -727,7 +789,8 @@ jobs:
 
       - name: Package
         run: |
-          version="0.1.0-${GITHUB_SHA:0:7}"
+          version="${{ inputs.version }}"
+          [ -n "$version" ] || version="0.1.0-${GITHUB_SHA:0:7}"
           tar -C publish/${{ matrix.rid }} -czf "Mozz-${{ matrix.rid }}-${version}.tar.gz" .
           echo "PACKAGE=Mozz-${{ matrix.rid }}-${version}.tar.gz" >> "$GITHUB_ENV"
 

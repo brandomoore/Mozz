@@ -1,0 +1,308 @@
+name: Release
+
+# Turns a tag into something a person can download and run.
+#
+# Mozz had no release. CI produced artifacts, which is not the same thing: an
+# `actions/upload-artifact` bundle needs a GitHub account to download, expires
+# after thirty days, and is named after a commit nobody recognises. Every
+# "install Mozz" instruction in the repo pointed at building it from source —
+# which for the desktop means a Swift toolchain, the .NET SDK and a Rust
+# compiler, and for Android means cross-compiling Swift against the NDK.
+#
+# So: push a tag, get a GitHub Release with a file per platform, checksums, and
+# notes. That is the whole job.
+#
+# WHAT THIS DOES NOT DO
+#
+# It does not ship iOS. An App Store or TestFlight build has to be signed with
+# the maintainer's Apple credentials and submitted through App Store Connect;
+# `fastlane beta --env fastlane` is that path and it stays manual, because the
+# credentials are his and are not in this repository. See docs/RELEASING.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Marketing version, e.g. 2026.9.20 (no leading v)."
+        type: string
+        required: true
+      draft:
+        description: "Publish as a draft rather than a live release."
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # One version, decided once and handed to every builder.
+  #
+  # The alternative — each job deriving it from the tag itself — is how the three
+  # clients came to disagree about what version they were in the first place.
+  version:
+    name: Resolve the version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: resolve
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+            tag="v${version}"
+          else
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+          fi
+
+          # The tag is the claim; project.yml is what the apps actually compile
+          # in. A release whose binaries say a different number than its tag is
+          # worse than no release, because the version in a bug report then
+          # names nothing.
+          declared="$(python3 tools/version-info.py --field marketing)"
+          if [ "$declared" != "$version" ]; then
+            echo "::error::Tag ${tag} says ${version}, but project.yml declares ${declared}."
+            echo "Bump MARKETING_VERSION in project.yml to ${version} and re-tag."
+            exit 1
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${tag} (version ${version})"
+
+  # ---------------------------------------------------------------------------
+  # The same desktop build CI already runs, asked for by name with a real
+  # version rather than a commit sha.
+  desktop:
+    name: Desktop
+    needs: version
+    uses: ./.github/workflows/desktop-app.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  # ---------------------------------------------------------------------------
+  # Android: cross-compile the Swift core against the NDK, then assemble a
+  # signed, minified APK per ABI.
+  #
+  # Not the `swift:` container the FFI spike uses — that image has no Android
+  # SDK and no JDK, and the APK needs both. Starting from the GitHub runner,
+  # which has them, and layering Swift on is the shorter of the two setups.
+  android:
+    name: Android
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            abi: arm64-v8a
+          - arch: x86_64
+            abi: x86_64
+
+    env:
+      ANDROID_SDK_URL: "https://download.swift.org/swift-6.3.3-release/android-sdk/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE_android.artifactbundle.tar.gz"
+      ANDROID_SDK_CHECKSUM: "d160cc3206dd1886dae3fef2337af5e25ec034692cd0ec225721c56cc69da7f5"
+      NDK_VERSION: "27.2.12479018"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.3.3"
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - name: Install the NDK
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --install "ndk;${NDK_VERSION}" >/dev/null
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      # Pinned by checksum, and tolerant of `swift sdk install` reporting failure
+      # after it has in fact registered the bundle — the same intermittency the
+      # FFI spike works around, for the same reason.
+      - name: Install the Swift Android SDK
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if swift sdk install "$ANDROID_SDK_URL" --checksum "$ANDROID_SDK_CHECKSUM"; then
+              break
+            fi
+            if swift sdk list 2>/dev/null | grep -qi android; then
+              echo "already registered — proceeding"
+              break
+            fi
+            [ "$attempt" -lt 3 ] || { echo "::error::Swift Android SDK would not install"; exit 1; }
+            sleep 15
+          done
+          swift sdk list
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('clients/android/**/*.gradle.kts', 'clients/android/gradle/libs.versions.toml') }}
+          restore-keys: gradle-
+
+      - name: Cache the Swift build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swiftbuild-android-${{ matrix.arch }}-6.3.3-${{ hashFiles('Package.swift', 'Sources/**') }}
+          restore-keys: swiftbuild-android-${{ matrix.arch }}-6.3.3-
+
+      # The keystore arrives base64 in a secret and is written outside the
+      # workspace, so no step that archives the tree can pick it up.
+      #
+      # Its absence is a hard failure here and nowhere else: a contributor
+      # running `assembleRelease` locally gets an unsigned APK and that is fine,
+      # but publishing one would put a file on the releases page that Android
+      # refuses to install, with no explanation a user could act on.
+      - name: Stage the signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64}" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not set."
+            echo "Create a keystore and add it as a repository secret — see docs/RELEASING.md."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/mozz-release.jks"
+          echo "MOZZ_KEYSTORE=$RUNNER_TEMP/mozz-release.jks" >> "$GITHUB_ENV"
+
+      - name: Assemble the release APK
+        env:
+          MOZZ_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MOZZ_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          MOZZ_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          MOZZ_MARKETING_VERSION: ${{ needs.version.outputs.version }}
+        working-directory: clients/android
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon assembleRelease \
+            -Pmozz.swiftArchs=${{ matrix.arch }}
+
+      # An unsigned APK builds perfectly and installs nowhere. Assert rather than
+      # assume, because the failure is silent right up to a user's phone.
+      - name: Verify the APK is signed
+        run: |
+          set -euo pipefail
+          apk="$(find clients/android/app/build/outputs/apk/release -name '*.apk' | head -1)"
+          [ -n "$apk" ] || { echo "::error::no APK was produced"; exit 1; }
+          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)"
+          "$apksigner" verify --print-certs "$apk"
+          echo "APK=$apk" >> "$GITHUB_ENV"
+
+      - name: Name it after the release
+        run: |
+          set -euo pipefail
+          dest="Mozz-android-${{ matrix.abi }}-${{ needs.version.outputs.version }}.apk"
+          cp "$APK" "$dest"
+          ls -lh "$dest"
+          echo "PACKAGE=$dest" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mozz-android-${{ matrix.abi }}
+          path: ${{ env.PACKAGE }}
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish the release
+    needs: [version, desktop, android]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: incoming
+          merge-multiple: true
+
+      - name: Collect and checksum
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find incoming -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.apk' \) \
+            -exec cp {} dist/ \;
+          cd dist
+          [ "$(ls -A)" ] || { echo "::error::nothing to publish"; exit 1; }
+          sha256sum * > SHA256SUMS.txt
+          ls -lh
+          cat SHA256SUMS.txt
+
+      - name: Release notes
+        run: |
+          set -euo pipefail
+          version="${{ needs.version.outputs.version }}"
+          {
+            echo "## Install"
+            echo
+            echo "| Platform | File |"
+            echo "|---|---|"
+            echo "| Android (most phones) | \`Mozz-android-arm64-v8a-${version}.apk\` |"
+            echo "| Android (emulator) | \`Mozz-android-x86_64-${version}.apk\` |"
+            echo "| Windows | \`Mozz-win-x64-${version}.zip\` |"
+            echo "| macOS (Apple silicon) | \`Mozz-osx-arm64-${version}.zip\` |"
+            echo "| Linux x64 | \`Mozz-linux-x64-${version}.tar.gz\` |"
+            echo "| Linux arm64 | \`Mozz-linux-arm64-${version}.tar.gz\` |"
+            echo
+            # An absolute URL: relative links do not resolve in a release body.
+            echo "Per-platform steps, including the first-run warnings on Windows"
+            echo "and macOS, are in [the install guide](https://github.com/thatcube/Mozz/blob/main/docs/INSTALL.md)."
+            echo
+            echo "iOS is not here: it ships through TestFlight and the App Store."
+            echo
+            echo "Verify a download against \`SHA256SUMS.txt\`."
+            echo
+            echo "### Changes"
+            echo
+            if [ -f CHANGELOG.md ]; then
+              awk -v v="## ${version}" '
+                $0 ~ "^"v {found=1; next}
+                found && /^## / {exit}
+                found {print}
+              ' CHANGELOG.md
+            fi
+          } > notes.md
+          cat notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: Mozz ${{ needs.version.outputs.version }}
+          body_path: notes.md
+          files: dist/*
+          draft: ${{ inputs.draft || false }}
+          fail_on_unmatched_files: true
