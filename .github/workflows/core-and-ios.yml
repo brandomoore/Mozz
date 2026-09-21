@@ -95,6 +95,27 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # cbindgen, which the xcframework build shells out to for the generated
+      # C header. Its absence is why this job failed on every push from
+      # 2026-09-13 onward — eight consecutive red runs, each about 35 seconds,
+      # all dying before a single one of the 658 core tests ran. The gate that
+      # protects every platform was reporting on nothing at all for over a week.
+      #
+      # `audio-engine.yml` installs it and this workflow did not, which is the
+      # whole of the bug. Same pinned version as that workflow, because the
+      # header it generates is checked against a committed copy and a different
+      # cbindgen can emit a different, equally correct header.
+      - name: Cache cbindgen
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cbindgen
+          key: cbindgen-0.29.4-${{ runner.os }}
+
+      - name: Install cbindgen
+        run: |
+          command -v cbindgen >/dev/null 2>&1 \
+            || cargo install cbindgen --version 0.29.4 --locked
+
       # --all builds every Apple slice, because this job also builds the iOS
       # app. A macOS-only framework links on the Mac and then fails at the one
       # step that matters, which is exactly the failure CI exists to catch.
