@@ -95,10 +95,38 @@ val buildSwiftCore = tasks.register("buildSwiftCore") {
 
     doLast {
         swiftArchitectures.forEach { arch ->
-            providers.exec {
-                workingDir = repoRoot
-                commandLine("./spike/android-ffi/build-local.sh", "--arch", arch)
-            }.result.get().assertNormalExitValue()
+            // Read the script's output and re-log it, line by line.
+            //
+            // Two earlier attempts at this were wrong in instructive ways.
+            // `providers.exec` buffers both streams and forwards neither, so a
+            // failing cross-compile reported one line — "finished with non-zero
+            // exit value 1" — and nothing about why; it also refuses to let the
+            // streams be reconfigured ("Standard streams cannot be configured
+            // for exec output provider"). ProcessBuilder.inheritIO() looks like
+            // the fix and is not: it inherits the Gradle DAEMON's descriptors,
+            // which are not the console, so the output still goes nowhere.
+            //
+            // Reading the pipe and handing each line to Gradle's logger is the
+            // one approach that reaches a terminal and a CI log alike. It also
+            // streams, so a slow cross-compile shows progress rather than going
+            // silent for minutes.
+            val process = ProcessBuilder("./spike/android-ffi/build-local.sh", "--arch", arch)
+                .directory(repoRoot)
+                .redirectErrorStream(true)
+                .start()
+
+            val transcript = StringBuilder()
+            process.inputStream.bufferedReader().forEachLine { line ->
+                transcript.appendLine(line)
+                logger.lifecycle(line)
+            }
+
+            val exit = process.waitFor()
+            if (exit != 0) {
+                throw GradleException(
+                    "build-local.sh --arch $arch failed with exit $exit:\n" +
+                        transcript.toString().trim())
+            }
         }
     }
 }

@@ -64,13 +64,37 @@ fi
 export ANDROID_NDK_HOME
 echo "NDK: $ANDROID_NDK_HOME"
 
-NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin"
-[ -x "$NDK_BIN/clang" ] || { echo "no clang at $NDK_BIN" >&2; exit 1; }
+# The NDK ships one prebuilt toolchain per HOST, in a directory named after it.
+# This said `darwin-x86_64` outright, which is true on the Mac this script was
+# written for and false on the Linux runner that builds the release — where the
+# clang test failed instantly and, because Gradle captures this script's output,
+# printed nothing at all. Pick by host, and say which when it is missing.
+case "$(uname -s)" in
+    Darwin) NDK_HOST="darwin-x86_64" ;;
+    Linux)  NDK_HOST="linux-x86_64" ;;
+    *) echo "unsupported host for the NDK toolchain: $(uname -s)" >&2; exit 1 ;;
+esac
+NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$NDK_HOST/bin"
+[ -x "$NDK_BIN/clang" ] || {
+    echo "no clang at $NDK_BIN" >&2
+    echo "(host $(uname -s), NDK $ANDROID_NDK_HOME)" >&2
+    exit 1
+}
 
-BUNDLE="$(ls -d "$HOME/Library/org.swift.swiftpm/swift-sdks/"*android.artifactbundle 2>/dev/null | head -1 || true)"
-if [ -z "$BUNDLE" ]; then
-    BUNDLE="$(ls -d "$HOME/.swiftpm/swift-sdks/"*android.artifactbundle 2>/dev/null | head -1 || true)"
-fi
+# Where `swift sdk install` put the bundle, which differs by host and by
+# toolchain. An already-exported SDK_BUNDLE wins, so a caller that has already
+# resolved it — the release workflow does — does not have to match one of these
+# guesses. `$HOME/.config/swiftpm` is the Linux location and was missing, which
+# is the second reason this script could not run off a Mac.
+BUNDLE="${SDK_BUNDLE:-}"
+for dir in \
+    "$HOME/Library/org.swift.swiftpm/swift-sdks" \
+    "$HOME/.swiftpm/swift-sdks" \
+    "$HOME/.config/swiftpm/swift-sdks"
+do
+    [ -n "$BUNDLE" ] && break
+    BUNDLE="$(ls -d "$dir/"*android.artifactbundle 2>/dev/null | head -1 || true)"
+done
 [ -n "$BUNDLE" ] || { echo "the Swift Android SDK is not installed — see spike/android-ffi/README.md" >&2; exit 1; }
 echo "Swift Android SDK: $BUNDLE"
 
