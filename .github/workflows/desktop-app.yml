@@ -56,7 +56,13 @@ on:
     # same tag ref) so `cancel-in-progress` would have one kill the other. Which
     # one died would be a coin toss, and losing the release's copy means a
     # release with no desktop downloads.
-    tags-ignore:
+    # Any branch, never a tag. `branches` is what excludes tag pushes here:
+    # a push event carrying a branch filter does not match a tag push at all.
+    # An earlier attempt used `tags-ignore: ["**"]`, which stopped the tag
+    # double-run as intended and also stopped the workflow firing on ordinary
+    # branch pushes — so between then and now, no push validated the desktop
+    # build, which is the opposite of the point.
+    branches:
       - "**"
     paths:
       - "clients/desktop/**"
