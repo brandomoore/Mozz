@@ -118,7 +118,13 @@ jobs:
     env:
       ANDROID_SDK_URL: "https://download.swift.org/swift-6.3.3-release/android-sdk/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE_android.artifactbundle.tar.gz"
       ANDROID_SDK_CHECKSUM: "d160cc3206dd1886dae3fef2337af5e25ec034692cd0ec225721c56cc69da7f5"
-      NDK_VERSION: "27.2.12479018"
+      ANDROID_SDK_NAME: "swift-6.3.3-RELEASE_android"
+      # NDK_VERSION is not set here. It is read out of
+      # `clients/android/core/build.gradle.kts` at run time, because AGP resolves
+      # `ndkVersion` by path under $ANDROID_HOME/ndk/<version> and a copy of that
+      # string in this file would be free to drift from it. When it drifted the
+      # failure was not "wrong NDK" but a CMake build that could not find one at
+      # all, which reads as a broken JNI shim.
 
     steps:
       - uses: actions/checkout@v4
@@ -145,11 +151,30 @@ jobs:
         with:
           targets: aarch64-linux-android,x86_64-linux-android
 
+      # Installed into $ANDROID_HOME/ndk/<version>, where the Android Gradle
+      # Plugin looks, rather than unpacked somewhere of our choosing — AGP
+      # resolves `ndkVersion` by path, so an NDK anywhere else is invisible to
+      # the CMake build of the JNI shim no matter what ANDROID_NDK_HOME says.
+      #
+      # `set +o pipefail` around the pipe on purpose. sdkmanager exits as soon
+      # as it has consumed the licence prompts, `yes` then takes SIGPIPE and
+      # exits 141, and under pipefail that 141 fails the step even though the
+      # install succeeded. That is what failed the first release run.
       - name: Install the NDK
         run: |
           set -euo pipefail
-          yes | sdkmanager --install "ndk;${NDK_VERSION}" >/dev/null
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          NDK_VERSION="$(sed -n 's/.*ndkVersion[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+            clients/android/core/build.gradle.kts | head -1)"
+          [ -n "$NDK_VERSION" ] || { echo "::error::no ndkVersion in core/build.gradle.kts"; exit 1; }
+          echo "Gradle asks for NDK ${NDK_VERSION}"
+          ndk="${ANDROID_HOME}/ndk/${NDK_VERSION}"
+          if [ ! -d "$ndk" ]; then
+            set +o pipefail
+            yes | sdkmanager --install "ndk;${NDK_VERSION}" >/dev/null
+            set -o pipefail
+          fi
+          test -d "$ndk" || { echo "::error::NDK ${NDK_VERSION} did not install"; exit 1; }
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
 
       # Pinned by checksum, and tolerant of `swift sdk install` reporting failure
       # after it has in fact registered the bundle — the same intermittency the
@@ -169,6 +194,31 @@ jobs:
             sleep 15
           done
           swift sdk list
+
+          # `swift sdk install` writes under the toolchain's real home, which is
+          # not always $HOME. Resolve the bundle from the known locations, then
+          # fall back to searching for it.
+          for d in "$HOME/.swiftpm/swift-sdks" /root/.swiftpm/swift-sdks \
+                   /github/home/.swiftpm/swift-sdks; do
+            if [ -d "$d/${ANDROID_SDK_NAME}.artifactbundle" ]; then
+              BUNDLE="$d/${ANDROID_SDK_NAME}.artifactbundle"; break
+            fi
+          done
+          if [ -z "${BUNDLE:-}" ]; then
+            BUNDLE="$(find "$HOME" -type d -name "${ANDROID_SDK_NAME}.artifactbundle" 2>/dev/null | head -1)"
+          fi
+          [ -n "$BUNDLE" ] || { echo "::error::could not locate the Android SDK bundle"; exit 1; }
+          echo "SDK_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
+
+      # The SDK carries Swift's Android runtime but not an NDK; this script links
+      # the two. Skipping it was the second reason the first release run could
+      # never have produced an APK — the cross-compile has no sysroot without it.
+      - name: Link the NDK into the Swift SDK
+        run: |
+          set -euxo pipefail
+          ( cd "$SDK_BUNDLE/swift-android" \
+            && ANDROID_NDK_HOME="$ANDROID_NDK_HOME" ./scripts/setup-android-sdk.sh )
+          test -x "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
 
       - name: Cache Gradle
         uses: actions/cache@v4
