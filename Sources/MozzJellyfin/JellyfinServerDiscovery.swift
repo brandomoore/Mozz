@@ -155,7 +155,7 @@ public final class JellyfinServerDiscovery: JellyfinDiscovering, @unchecked Send
         cancelled: AtomicFlag,
         yield: (DiscoveredServer) -> Void
     ) {
-        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        let fd = socket(AF_INET, PortableSocket.datagram, 0)
         guard fd >= 0 else {
             log.error("Discovery socket() failed (errno \(errno))")
             return
@@ -343,5 +343,30 @@ private final class AtomicFlag: @unchecked Sendable {
     private var value = false
     var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
     func set() { lock.lock(); value = true; lock.unlock() }
+}
+
+#else
+/// Windows has no BSD socket discovery, so it has no Jellyfin discovery.
+///
+/// The same line `PlexLocalDiscovery` draws, and for the same reason: Winsock is
+/// a different API, and a Windows user reaches a server by address today.
+/// Discovery finding nothing is exactly the behaviour Windows already had.
+///
+/// The stub exists so callers do not have to know. `MozzFFI` names this type
+/// unconditionally, and without a Windows definition the whole facade failed to
+/// compile there — `cannot find 'JellyfinServerDiscovery' in scope` — which took
+/// the entire desktop client down with it, not just discovery. Plex had its
+/// stub; this is the one that never caught up.
+public final class JellyfinServerDiscovery: JellyfinDiscovering, @unchecked Sendable {
+    public init(
+        maxSweepHosts: UInt32 = 1024,
+        makeProbeClient: @escaping @Sendable (URL) -> HTTPClient = { url in
+            HTTPClient(baseURL: url, transport: URLSessionTransport(role: .discovery), retryPolicy: .none)
+        }
+    ) {}
+
+    public func discover(timeout: TimeInterval = 2) -> AsyncStream<DiscoveredServer> {
+        AsyncStream { $0.finish() }
+    }
 }
 #endif

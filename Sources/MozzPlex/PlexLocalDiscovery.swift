@@ -210,7 +210,7 @@ public struct PlexLocalDiscovery: PlexLocallyDiscovering {
     private static func run(
         timeout: TimeInterval, maximumSweepHosts: UInt32
     ) -> [PlexLocalServer] {
-        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        let fd = socket(AF_INET, PortableSocket.datagram, 0)
         guard fd >= 0 else { return [] }
         defer { close(fd) }
 
