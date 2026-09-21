@@ -50,12 +50,19 @@ CalVer, `YYYY.M.D`. A second release the same day is `2026.9.21.1`.
 
 Set these under **Settings → Secrets and variables → Actions**.
 
-| Secret | What it is |
-|---|---|
-| `ANDROID_KEYSTORE_BASE64` | The release keystore, base64-encoded |
-| `ANDROID_KEYSTORE_PASSWORD` | Its store password |
-| `ANDROID_KEY_ALIAS` | The key alias inside it |
-| `ANDROID_KEY_PASSWORD` | That key's password |
+| Secret | What it is | Required |
+|---|---|---|
+| `ANDROID_KEYSTORE_BASE64` | The release keystore, base64-encoded | yes |
+| `ANDROID_KEYSTORE_PASSWORD` | Its store password | yes |
+| `ANDROID_KEY_ALIAS` | The key alias inside it | no — defaults to `mozz` |
+| `ANDROID_KEY_PASSWORD` | That key's password | no — defaults to the store password |
+
+The last two are usually unnecessary. A keystore password protects the file; a
+key password protects one entry inside it, so that a build server can be handed
+one key out of several. Mozz has one key, and keytool has defaulted to PKCS12
+since JDK 9, where the two have to match anyway — so setting both was two places
+to keep one value in step, and a typo in either fails the release with a message
+that points at signing rather than at the typo.
 
 ### Creating the Android keystore (once, ever)
 

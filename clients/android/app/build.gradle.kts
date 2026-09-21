@@ -94,8 +94,9 @@ android {
     //
     //   tools/make-release-keystore.sh
     //
-    // Then set MOZZ_KEYSTORE (path), MOZZ_KEYSTORE_PASSWORD, MOZZ_KEY_ALIAS and
-    // MOZZ_KEY_PASSWORD in the environment.
+    // Then set MOZZ_KEYSTORE (path) and MOZZ_KEYSTORE_PASSWORD. MOZZ_KEY_ALIAS
+    // and MOZZ_KEY_PASSWORD are optional and default to `mozz` and the store
+    // password.
     val keystoreFile = System.getenv("MOZZ_KEYSTORE")?.takeIf { it.isNotBlank() }?.let(::file)
 
     signingConfigs {
@@ -104,11 +105,36 @@ android {
                 storeFile = keystoreFile
                 storePassword = System.getenv("MOZZ_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("MOZZ_KEY_ALIAS") ?: "mozz"
+                // The key password falls back to the store's.
+                //
+                // A keystore protects the file; a key password protects one
+                // entry inside it, so a build server can be given one key out of
+                // several. Mozz has one key, and keytool has defaulted to PKCS12
+                // since JDK 9, where the two have to match anyway — so requiring
+                // a separate secret for it was two places to set one value, and
+                // a mismatch would fail the release for no reason a reader could
+                // see. Still honoured when set, for a keystore that does differ.
                 keyPassword = System.getenv("MOZZ_KEY_PASSWORD")
-                // Both schemes: v2 is what modern Android verifies, v1 is what
-                // keeps API 28 devices — the minSdk — able to install at all.
-                enableV1Signing = true
+                    ?.takeIf { it.isNotBlank() }
+                    ?: System.getenv("MOZZ_KEYSTORE_PASSWORD")
+                // Both asked for; AGP emits only what minSdk needs.
+                //
+                // Worth knowing before reading an `apksigner verify` report and
+                // thinking something is wrong: AGP prunes signature schemes that
+                // are redundant for the declared minSdk, whatever is requested
+                // here. At minSdk 28 that means v1 (JAR signing, only needed
+                // below API 24) is dropped, and so is v2 once v3 is on — the
+                // verifier then prints `v2: false, v3: true`, which is a correct
+                // and complete signature for every Android this app supports.
+                //
+                // v3 is on for the proof-of-rotation record it carries. It
+                // changes nothing today, and it is the only mechanism by which
+                // Mozz could ever move to a different signing key without every
+                // installed copy becoming un-updatable. It cannot be added
+                // retroactively to builds already shipped, so the time to turn
+                // it on is the first release.
                 enableV2Signing = true
+                enableV3Signing = true
             }
         }
     }
