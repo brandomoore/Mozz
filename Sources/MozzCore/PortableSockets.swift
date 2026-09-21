@@ -25,6 +25,14 @@ import Musl
 /// is portable" was being asserted by a job that had stopped checking. The
 /// constant lives here rather than in each of them because a portability shim
 /// written twice is one that will be fixed once.
+///
+/// Windows has neither symbol — it is Winsock, and none of the C library modules
+/// above are imported there — so the first version of this file, whose whole
+/// purpose was portability, was itself the thing that failed to compile on
+/// Windows. The literals are the Winsock values, fixed since Winsock 1.1 and
+/// identical to every BSD stack's. Nothing on Windows calls these (both
+/// discoveries are `#if !os(Windows)`), but the type stays total so that a
+/// future caller does not have to guard around it.
 public enum PortableSocket {
     // Glibc only, and explicitly not Android or Bionic. The condition is about
     // which C library actually provides the symbol, not which ones happen to be
@@ -35,7 +43,9 @@ public enum PortableSocket {
 
     /// `SOCK_DGRAM` as the `Int32` that `socket(_:_:_:)` wants.
     public static var datagram: Int32 {
-        #if canImport(Glibc) && !canImport(Android) && !canImport(Bionic)
+        #if os(Windows)
+        return 2
+        #elseif canImport(Glibc) && !canImport(Android) && !canImport(Bionic)
         return Int32(SOCK_DGRAM.rawValue)
         #else
         return SOCK_DGRAM
@@ -44,7 +54,9 @@ public enum PortableSocket {
 
     /// `SOCK_STREAM`, same reasoning.
     public static var stream: Int32 {
-        #if canImport(Glibc) && !canImport(Android) && !canImport(Bionic)
+        #if os(Windows)
+        return 1
+        #elseif canImport(Glibc) && !canImport(Android) && !canImport(Bionic)
         return Int32(SOCK_STREAM.rawValue)
         #else
         return SOCK_STREAM
