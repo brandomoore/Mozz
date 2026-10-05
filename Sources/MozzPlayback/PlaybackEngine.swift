@@ -327,6 +327,15 @@ public final class PlaybackEngine {
     /// was trying. Status now stays `.buffering` until the playhead genuinely
     /// moves past this point, which only happens once samples are flowing.
     private var awaitingAudioFrom: Double?
+    /// The first playhead reading taken while waiting. Audio is flowing once
+    /// the playhead moves away from it — wherever it started.
+    ///
+    /// Comparing only against the requested start was not enough: a seek that
+    /// does not land (the engine refuses it, or the format cannot seek) leaves
+    /// the playhead advancing from somewhere else, never past the target, and
+    /// the player would show a spinner forever over music that is plainly
+    /// playing.
+    private var awaitingAudioBaseline: Double?
     /// The repeating main-actor timer that polls engine progress + ticks the UI
     /// position. Replaces the old periodic time-observer + end/failure
     /// notifications. Deliberately a RunLoop timer: it must not fire during the
@@ -558,9 +567,30 @@ public final class PlaybackEngine {
     public func resume() {
         guard let track = currentTrack else { return }
         try? session.activate()
+        let hadEngine = audio != nil
         ensureEngine()
-        audio?.resume()
-        beginAwaitingAudio(from: audio?.positionSeconds ?? 0)
+
+        // The engine may not have this track at all. A session restored at
+        // launch is loaded paused before any audio engine exists — the engine is
+        // only built on the first play — so `startEngine` had nothing to hand it
+        // to and returned. Resuming then resumed an empty engine: silence, a
+        // pause button (later a spinner) that never moved, until a skip did a
+        // real load. That was "the first song after launch doesn't play until I
+        // skip". Hand it over now, at the restored position.
+        if let item = loaded.first, !hadEngine || audio?.currentTrackID != item.key {
+            // A server-seek transcode was already requested at the offset.
+            let seekTo = item.requiresServerSeek || snapshot.elapsed <= 0 ? nil : snapshot.elapsed
+            startEngine(with: item, autoplay: true, seekTo: seekTo)
+            beginAwaitingAudio(from: seekTo ?? 0)
+        } else if loaded.isEmpty {
+            // Still resolving (the server may still be coming up). Restart the
+            // load as a playing one, so it does not finish into a pause.
+            pendingSeek = snapshot.elapsed > 1 ? snapshot.elapsed : nil
+            reload(autoplay: true, logStartOnLoad: false, initialElapsed: nil)
+        } else {
+            audio?.resume()
+            beginAwaitingAudio(from: audio?.positionSeconds ?? 0)
+        }
         emitCheckpoint(.transportChanged)
         // Covers the paused-load case (e.g. `previous()` while paused): the
         // track was loaded without a `.started`, so log it now that it plays.
@@ -578,6 +608,7 @@ public final class PlaybackEngine {
             return
         }
         awaitingAudioFrom = start
+        awaitingAudioBaseline = nil
         publish(status: .buffering)
     }
 
@@ -588,8 +619,13 @@ public final class PlaybackEngine {
               snapshot.status == .buffering,
               let audio, audio.state == .playing else { return }
         let raw = audio.positionSeconds
-        guard raw.isFinite, raw > start + 0.05 else { return }
+        guard raw.isFinite else { return }
+        let passedStart = raw > start + 0.05
+        let moved = awaitingAudioBaseline.map { abs(raw - $0) > 0.05 } ?? false
+        if awaitingAudioBaseline == nil { awaitingAudioBaseline = raw }
+        guard passedStart || moved else { return }
         awaitingAudioFrom = nil
+        awaitingAudioBaseline = nil
         publish(status: .playing)
         report(.playing)
     }

@@ -151,6 +151,9 @@ pub struct Engine {
     channels: usize,
     /// The identifier reported at the boundary when this track starts playing.
     pending_track: Option<u64>,
+    /// How far into the pending track a seek landed before its boundary was
+    /// written. See `seek`.
+    pending_offset: u64,
     /// The rate the output device actually runs at.
     ///
     /// Everything after the decoder works at this rate, which is why the
@@ -196,6 +199,7 @@ impl Engine {
             ring,
             channels,
             pending_track: None,
+            pending_offset: 0,
             carry: Vec::new(),
         }
     }
@@ -237,6 +241,7 @@ impl Engine {
         self.replay_gain.track_gain_db = gain_db;
         self.decoder = Some(decoder);
         self.pending_track = Some(track);
+        self.pending_offset = 0;
         self.carry.clear();
     }
 
@@ -310,7 +315,25 @@ impl Engine {
         let Some(decoder) = self.decoder.as_mut() else {
             return Ok(0);
         };
-        let landed = decoder.seek(seconds)?;
+        let source_rate = decoder.spec().sample_rate.max(1) as u128;
+        let landed_in_source = decoder.seek(seconds)?;
+        // The decoder answers in the FILE's frames; everything that reads this
+        // value — the player's track origin and its position — counts frames as
+        // the DEVICE hears them, after resampling. Unconverted, a 44.1 kHz file
+        // on a 48 kHz device reported every seek about 8% short of where the
+        // audio actually was, and an 8 kHz file sought to 0:05 showed 0:00.83.
+        let landed = (landed_in_source as u128 * self.device_rate as u128 / source_rate) as u64;
+        // Sought before the track's boundary was written — a track started and
+        // moved at once, which is how a restored session or a reconnect at the
+        // last position begins. The boundary is what tells the reader where the
+        // track starts, and it is written with the first frames; without this
+        // it would mark the sought-to audio as frame zero, and position would
+        // count up from 0:00 while the listener heard 0:05. Every surface that
+        // reads position — the scrubber, the resume point, play history — was
+        // wrong after a restore.
+        if self.pending_track.is_some() {
+            self.pending_offset = landed;
+        }
         self.ring.reset();
         self.equalizer.reset();
         if let Some(resampler) = self.resampler.as_mut() {
@@ -361,8 +384,9 @@ impl Engine {
         // The boundary has to be recorded before the frames it labels are
         // written, or the consumer could read past it and never report it.
         if let Some(track) = self.pending_track {
-            if self.ring.mark_boundary(track) {
+            if self.ring.mark_boundary_into(track, self.pending_offset) {
                 self.pending_track = None;
+                self.pending_offset = 0;
             }
         }
 
@@ -539,6 +563,53 @@ mod tests {
 
         assert_eq!(out.len(), 100);
         assert!((out[0] - 0.5).abs() < 0.01, "expected ~0.5, got {}", out[0]);
+    }
+
+    /// A seek's landing point is reported in the frames the DEVICE counts,
+    /// not the file's. Everything downstream subtracts it from a device-frame
+    /// counter; in file frames, an 8 kHz track sought to 1s on a 48 kHz device
+    /// would claim to be a sixth of a second in.
+    #[test]
+    fn a_seek_reports_where_it_landed_in_device_frames() {
+        let (tx, _rx) = ring(4096, 1);
+        let mut engine = Engine::with_device_rate(tx, 1, 48_000);
+        engine.play_now(decoder(&[0; 16_000]), 1, None); // 2s at 8 kHz
+
+        let landed = engine.seek(1.0).unwrap();
+
+        // The reader lands on a packet boundary at or before the request, so
+        // "about a second" rather than exactly — but in device frames that is
+        // tens of thousands, where the file's own frames would be at most 8,000.
+        assert!(
+            (40_000..=48_000).contains(&landed),
+            "expected about 1s in 48 kHz frames, got {landed}"
+        );
+    }
+
+    /// A track sought before any of it was written still counts its position
+    /// from the seek target. Its boundary is written with its first frames,
+    /// and used to mark the sought-to audio as frame zero — so a restored
+    /// session resumed at 0:05 read 0:00 while 0:05 was what played.
+    #[test]
+    fn a_track_sought_before_it_was_written_counts_from_the_seek() {
+        let (tx, mut rx) = ring(64_000, 1);
+        let mut engine = Engine::with_device_rate(tx, 1, 8_000);
+        engine.play_now(decoder(&[0; 16_000]), 7, None);
+        let landed = engine.seek(1.0).unwrap();
+
+        engine.pump().unwrap();
+        let mut out = [0.0f32; 16];
+        let boundary = rx
+            .read(&mut out)
+            .boundary
+            .expect("the track's start must be reported");
+
+        assert_eq!(boundary.track, 7);
+        assert_eq!(
+            boundary.frame as i64 - boundary.origin,
+            landed as i64,
+            "position must count from the seek target, not from zero"
+        );
     }
 
     #[test]

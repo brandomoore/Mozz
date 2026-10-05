@@ -203,8 +203,10 @@ impl crate::sink::PlaybackObserver for Observable {
     fn observe(&self, outcome: crate::ring::ReadOutcome) {
         if let Some(boundary) = outcome.boundary {
             self.current_track.store(boundary.track, Ordering::Relaxed);
+            // `origin`, not `frame`: a track sought before it began counts its
+            // position from the seek target, not from where its audio began.
             self.track_start_frame
-                .store(boundary.frame as i64, Ordering::Relaxed);
+                .store(boundary.origin, Ordering::Relaxed);
         }
         let start = self.track_start_frame.load(Ordering::Relaxed);
         let played = (outcome.end_frame as i64 - start).max(0) as u64;

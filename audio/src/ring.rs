@@ -65,6 +65,16 @@ pub struct Boundary {
     /// Opaque identifier of the track starting at `frame`, assigned by the
     /// caller. The ring never interprets it.
     pub track: u64,
+    /// The frame the track's own position counts from.
+    ///
+    /// Equal to `frame` for a track heard from its beginning. For one sought
+    /// before any of it was written, `frame` is still where its audio begins —
+    /// which is what decides when the boundary is reported — but its position
+    /// counts from where its frame zero would have been, earlier by however far
+    /// the seek went. Kept apart from `frame` because the two answer different
+    /// questions: folding the offset into `frame` made the boundary precede the
+    /// first frame ever written, wrap, and never be reported at all.
+    pub origin: i64,
 }
 
 /// What a read actually produced.
@@ -101,6 +111,8 @@ pub struct ReadOutcome {
 struct BoundarySlot {
     frame: AtomicU64,
     track: AtomicU64,
+    /// `Boundary::origin`, stored as its bit pattern.
+    origin: AtomicU64,
 }
 
 impl BoundarySlot {
@@ -108,6 +120,7 @@ impl BoundarySlot {
         Self {
             frame: AtomicU64::new(0),
             track: AtomicU64::new(0),
+            origin: AtomicU64::new(0),
         }
     }
 }
@@ -262,7 +275,18 @@ impl Producer {
     /// means the buffer is holding that many tracks at once. The caller should
     /// stop queueing rather than treat it as fatal.
     pub fn mark_boundary(&mut self, track: u64) -> bool {
+        self.mark_boundary_into(track, 0)
+    }
+
+    /// Mark a track whose first written frame is already `frames_in` frames
+    /// into it — a track sought before any of it had been written.
+    ///
+    /// The boundary still sits at the first written frame; its `origin` is
+    /// where the track's frame zero would be, so position counts from the seek
+    /// target rather than from zero.
+    pub fn mark_boundary_into(&mut self, track: u64, frames_in: u64) -> bool {
         let frame = self.next_frame();
+        let origin = frame as i64 - frames_in as i64;
         let write = self.shared.boundary_written.load(Ordering::Relaxed);
         let read = self.shared.boundary_read.load(Ordering::Acquire);
         if write - read >= MAX_PENDING_BOUNDARIES {
@@ -272,6 +296,7 @@ impl Producer {
         let slot = &self.shared.boundaries[write % MAX_PENDING_BOUNDARIES];
         slot.frame.store(frame, Ordering::Relaxed);
         slot.track.store(track, Ordering::Relaxed);
+        slot.origin.store(origin as u64, Ordering::Relaxed);
         self.shared
             .boundary_written
             .store(write + 1, Ordering::Release);
@@ -377,6 +402,7 @@ impl Consumer {
             found = Some(Boundary {
                 frame: at,
                 track: slot.track.load(Ordering::Relaxed),
+                origin: slot.origin.load(Ordering::Relaxed) as i64,
             });
             self.shared.boundary_read.store(read + 1, Ordering::Release);
         }
@@ -503,8 +529,33 @@ mod tests {
             outcome.boundary,
             Some(Boundary {
                 frame: 4,
-                track: 77
+                track: 77,
+                origin: 4,
             })
+        );
+    }
+
+    /// A track sought before any of it was written: its boundary is still
+    /// reported where its audio begins, but its position counts from where its
+    /// frame zero would have been. Folding the two together put the boundary
+    /// before the first frame ever written, where it wrapped and was never
+    /// reported, so the track never registered as started.
+    #[test]
+    fn a_track_sought_before_it_began_reports_where_its_audio_starts_and_counts_from_its_origin() {
+        let (mut tx, mut rx) = ring(16, 1);
+        assert!(tx.mark_boundary_into(9, 1_000));
+        tx.write(&[0.5, 0.5]);
+
+        let mut out = [0.0; 2];
+        let outcome = rx.read(&mut out);
+        assert_eq!(
+            outcome.boundary,
+            Some(Boundary {
+                frame: 0,
+                track: 9,
+                origin: -1_000,
+            }),
+            "the boundary must be reported, with the seek carried in its origin"
         );
     }
 

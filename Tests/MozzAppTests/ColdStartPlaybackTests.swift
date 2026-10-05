@@ -92,6 +92,38 @@ final class ColdStartPlaybackTests: XCTestCase {
         XCTAssertEqual(resolved.url, url)
     }
 
+    /// Open the app, press play: the song left paused last time must play.
+    ///
+    /// It never did. The session is restored before any audio engine exists,
+    /// so the restored song was never handed to one, and play then resumed an
+    /// empty engine — silence until a skip did a real load.
+    func testPressingPlayOnTheSessionRestoredAtLaunchPlaysIt() async throws {
+        let url = try makeWav(seconds: 20)
+        let tracks = [Track(id: "left-off", title: "L", artistName: "A"),
+                      Track(id: "next", title: "N", artistName: "A")]
+        let source = PlaybackEngine(resolver: FileResolver(url: url))
+        source.play(tracks: tracks)
+        guard let saved = source.persistentState else { return XCTFail("nothing to restore") }
+        source.stop()
+
+        // A fresh launch.
+        let engine = PlaybackEngine(resolver: FileResolver(url: url))
+        engineUnderTest = engine
+        engine.restore(PlaybackPersistentState(queue: saved.queue, elapsed: 5))
+        await engine.awaitPendingLoadsForTesting()
+        XCTAssertEqual(engine.snapshot.status, .paused)
+
+        engine.resume()
+
+        await eventually("the restored song plays") { engine.snapshot.status == .playing }
+        XCTAssertEqual(engine.currentTrack?.id, "left-off", "it must be the song left off, not the next")
+        // Seeks land on a packet boundary at or just before the request, so
+        // "near 0:05", not past it. Before the engine fix this read 0:00.06.
+        XCTAssertGreaterThan(engine.snapshot.elapsed, 4,
+                             "it should continue from where it was left, not from the start")
+        engine.stop()
+    }
+
     /// A paused track must stay paused when its stream fails.
     ///
     /// Recovery used to mark the player `.buffering` and then decide whether to
