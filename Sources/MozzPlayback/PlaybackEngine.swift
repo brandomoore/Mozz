@@ -773,7 +773,11 @@ public final class PlaybackEngine {
             return
         }
         currentTrack = track
-        publish(status: .buffering)
+        // `.buffering` only when this load is going to play. A paused load —
+        // the session restored at launch, a skip while paused — used to show
+        // `.buffering` until it finished, which the player now draws as a
+        // spinner, and which everything deciding "was it playing?" reads as yes.
+        publish(status: autoplay ? .buffering : .paused)
         onNeedsArtwork?(track)
         emitCheckpoint(.trackChanged)
         // Emit `.started` on intent (synchronously), so it's paired correctly
@@ -887,23 +891,34 @@ public final class PlaybackEngine {
     /// shells can't drift on which failures are worth retrying.
     private func handleEngineFailure() {
         guard recoveryTask == nil else { return }   // a retry is already scheduled
+        // Whether to come back playing is read HERE, before anything below
+        // touches the status. Recovery used to publish `.buffering` first and
+        // then let `reloadCurrent` infer "was playing" from the status — which
+        // `.buffering` answers yes. So a stream failing under a PAUSED track
+        // resumed it, and a permanent failure skipped ahead and played the next
+        // one. The paused track restored on every launch is exactly that case:
+        // its stream is the first request on a cold connection, the likeliest
+        // to fail, and the app would start playing music nobody asked for.
+        let resumePlaying = snapshot.status == .playing || snapshot.status == .buffering
         isRecovering = true
         guard audio?.failureIsRetryable == true,
               loaded.first?.isStreamed == true,
               recoveryRetryCount < Self.maxRecoveryRetries else {
-            advanceAfterUnrecoverableFailure()
+            advanceAfterUnrecoverableFailure(play: resumePlaying)
             return
         }
         recoveryRetryCount += 1
         let delay = min(pow(2.0, Double(recoveryRetryCount - 1)), 30.0)  // 1,2,4,8,16s (cap 30)
         let targetElapsed = snapshot.elapsed
         let generation = loadGeneration
-        publish(status: .buffering)
+        // A paused track is rebuilt quietly, still paused, so it is ready when
+        // play is pressed; only a playing one shows that it is reconnecting.
+        if resumePlaying { publish(status: .buffering) }
         recoveryTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self, !Task.isCancelled, generation == self.loadGeneration else { return }
             self.recoveryTask = nil
-            self.reloadCurrent(atElapsed: targetElapsed, reason: .recovery)
+            self.reloadCurrent(atElapsed: targetElapsed, reason: .recovery, autoplay: resumePlaying)
         }
     }
 
@@ -942,12 +957,14 @@ public final class PlaybackEngine {
 
     /// Recovery is exhausted (or the error isn't a transient network blip): treat
     /// the track as un-completable and advance, so playback doesn't dead-end.
-    private func advanceAfterUnrecoverableFailure() {
+    /// `play` is whether playback was running when the track failed: a paused
+    /// queue steps over the dead track and stays paused.
+    private func advanceAfterUnrecoverableFailure(play: Bool = true) {
         cancelRecovery()
         logTerminal(.skipped, position: snapshot.elapsed)
         pendingTransportDirection = .forward
         guard queue.advance() != nil else { stop(); return }
-        reload(autoplay: true)
+        reload(autoplay: play)
         maybeExtendQueue()
     }
 

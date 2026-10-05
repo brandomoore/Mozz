@@ -92,6 +92,44 @@ final class ColdStartPlaybackTests: XCTestCase {
         XCTAssertEqual(resolved.url, url)
     }
 
+    /// A paused track must stay paused when its stream fails.
+    ///
+    /// Recovery used to mark the player `.buffering` and then decide whether to
+    /// resume by asking whether it was playing or buffering — which it had just
+    /// made true. A stream dying under a song you had paused therefore started
+    /// it again, and a permanent failure skipped ahead and played the next one:
+    /// pause, put the phone down, and music starts by itself.
+    func testAFailingStreamUnderAPausedTrackDoesNotStartPlaying() async throws {
+        let dead = URL(string: "http://127.0.0.1:9/unreachable.mp3")!
+        let engine = PlaybackEngine(resolver: DeadStreamResolver(url: dead))
+        engineUnderTest = engine
+        engine.play(tracks: [
+            Track(id: "a", title: "A", artistName: "X"),
+            Track(id: "b", title: "B", artistName: "X"),
+        ])
+        await engine.awaitPendingLoadsForTesting()
+        // The engine now holds the stream. The listener pauses before the
+        // failure has been noticed.
+        engine.pause()
+
+        for _ in 0..<30 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            engine.refreshNowForTesting()
+            XCTAssertNotEqual(engine.snapshot.status, .playing,
+                              "a paused track started playing on its own")
+            XCTAssertNotEqual(engine.snapshot.status, .buffering,
+                              "a paused player should not start loading by itself")
+        }
+        engine.stop()
+    }
+
+    private struct DeadStreamResolver: TrackURLResolver {
+        let url: URL
+        func resolve(_ track: Track) async throws -> ResolvedTrackURL {
+            ResolvedTrackURL(url: url, isLocal: false)
+        }
+    }
+
     // MARK: Helpers
 
     private struct FileResolver: TrackURLResolver {
