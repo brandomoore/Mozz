@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -452,12 +453,22 @@ private fun DockContent(
         }
 
         IconButton(onClick = playback::togglePlayPause) {
-            Icon(
-                painterResource(if (state.isPlaying) R.drawable.ic_pause else R.drawable.ic_play),
-                contentDescription = if (state.isPlaying) "Pause" else "Play",
-                tint = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.size(22.dp),
-            )
+            // A spinner while a play waits for sound, so a cold-launch tap
+            // visibly does something. See PlaybackState.isBuffering.
+            if (state.isBuffering) {
+                CircularProgressIndicator(
+                    color = MaterialTheme.colorScheme.onSurface,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(20.dp),
+                )
+            } else {
+                Icon(
+                    painterResource(if (state.isPlaying) R.drawable.ic_pause else R.drawable.ic_play),
+                    contentDescription = if (state.isPlaying) "Pause" else "Play",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
         }
         IconButton(onClick = { playback.next() }, enabled = state.hasNext) {
             Icon(

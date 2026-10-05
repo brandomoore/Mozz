@@ -47,6 +47,13 @@ data class PlaybackState(
      * flickers on every track change.
      */
     val intendsToPlay: Boolean = false,
+    /**
+     * Asked to play and not yet making sound: the stream address is still being
+     * resolved, or the player is filling its buffer. On a cold launch this is
+     * seconds, and the play button used to show "play" throughout — as if the
+     * tap had not registered. The UI shows a spinner instead.
+     */
+    val isBuffering: Boolean = false,
     val positionMillis: Long = 0,
     val durationMillis: Long = 0,
     val shuffle: Boolean = false,
@@ -330,8 +337,13 @@ class PlayerController(
 
         clearFailure()
         val first = window[start]
+        // Show that the tap landed before the first network round trip, not
+        // after it: resolving the stream address is the slow part on a cold
+        // launch, and the player has nothing to report until it is done.
+        markStarting(true)
         val firstItem = mediaItem(first)
         if (firstItem == null) {
+            markStarting(false)
             // No address for the very track that was tapped. Silently returning
             // here is what made an unreachable server look like an app that
             // ignores you.
@@ -360,6 +372,8 @@ class PlayerController(
         media.setMediaItems(listOf(firstItem), 0, 0)
         media.prepare()
         media.play()
+        // From here the player's own STATE_BUFFERING carries the spinner.
+        markStarting(false)
         record(first, PlayEventKind.STARTED)
         report(first, PlaybackReportState.PLAYING, 0)
 
@@ -465,6 +479,15 @@ class PlayerController(
      * quietly behind it; the last, once those are spent, is the one that offers
      * the button. A toast per attempt would be three apologies for one problem.
      */
+    /** See [PlaybackState.isBuffering]: the window before the player has anything. */
+    private var starting = false
+
+    private fun markStarting(value: Boolean) {
+        starting = value
+        _state.value = _state.value.copy(isBuffering = value ||
+            (controller?.let { it.playWhenReady && it.playbackState == Player.STATE_BUFFERING } ?: false))
+    }
+
     private fun noteFailure(message: String) {
         val willRetry = attemptsSpent < RETRY_DELAYS_MS.size
         if (attemptsSpent == 0) {
@@ -831,6 +854,8 @@ class PlayerController(
             // starts buffering. Anything that reacts to "is this playing" in the
             // UI wants this instead, or it flickers on every track change.
             intendsToPlay = player.playWhenReady,
+            isBuffering = starting ||
+                (player.playWhenReady && player.playbackState == Player.STATE_BUFFERING),
             positionMillis = player.currentPosition.coerceAtLeast(0),
             durationMillis = player.duration.takeIf { it > 0 } ?: 0,
             shuffle = player.shuffleModeEnabled,

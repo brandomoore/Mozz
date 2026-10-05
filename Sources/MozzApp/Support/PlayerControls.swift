@@ -467,17 +467,25 @@ struct TransportSkipButton: View {
 /// the icon changing. Scale and fade are the honest description of a swap.
 struct PlayPauseButton: View {
     let playing: Bool
+    /// Asked to play and waiting for sound — the first song after a cold launch,
+    /// or a stream recovering. Shown as a spinner, because a play glyph there
+    /// reads as "nothing happened" and a pause glyph over silence reads as
+    /// broken. Tapping still cancels.
+    var buffering: Bool = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             ZStack {
                 AppIcon.play.styled(size: PlayerControlMetrics.playGlyph)
-                    .opacity(playing ? 0 : 1)
-                    .scaleEffect(playing ? 0.62 : 1)
+                    .opacity(playing || buffering ? 0 : 1)
+                    .scaleEffect(playing || buffering ? 0.62 : 1)
                 AppIcon.pause.styled(size: PlayerControlMetrics.playGlyph)
-                    .opacity(playing ? 1 : 0)
-                    .scaleEffect(playing ? 1 : 0.62)
+                    .opacity(playing && !buffering ? 1 : 0)
+                    .scaleEffect(playing && !buffering ? 1 : 0.62)
+                ProgressView()
+                    .controlSize(.large)
+                    .opacity(buffering ? 1 : 0)
             }
             // Enough bounce to feel alive; the incoming glyph settles just past
             // its mark and back, which is what sells it as a physical switch.
@@ -485,10 +493,11 @@ struct PlayPauseButton: View {
             // feedback on a toggle, where the skip is a transition between two
             // tracks. Close enough that the row still reads as one family.
             .animation(.spring(response: 0.4, dampingFraction: 0.62), value: playing)
+            .animation(.easeInOut(duration: 0.2), value: buffering)
             .playerHitTarget(PlayerControlMetrics.playHit)
         }
         .buttonStyle(PlayerButtonStyle(washDiameter: PlayerControlMetrics.playGlyph + 22))
         .foregroundStyle(.primary)
-        .accessibilityLabel(playing ? "Pause" : "Play")
+        .accessibilityLabel(buffering ? "Loading" : (playing ? "Pause" : "Play"))
     }
 }

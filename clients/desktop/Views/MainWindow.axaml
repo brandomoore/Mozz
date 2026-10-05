@@ -77,6 +77,17 @@
             <Setter Property="Orientation" Value="Vertical" />
             <Setter Property="Spacing" Value="8" />
         </Style>
+        <!-- A play that is waiting for sound. Avalonia has no progress ring, so
+             the transport spins Tabler's loader arc instead; the element must
+             carry a RotateTransform for the angle to have something to drive. -->
+        <Style Selector="controls|TablerIcon.spin">
+            <Style.Animations>
+                <Animation Duration="0:0:0.9" IterationCount="Infinite">
+                    <KeyFrame Cue="0%"><Setter Property="RotateTransform.Angle" Value="0" /></KeyFrame>
+                    <KeyFrame Cue="100%"><Setter Property="RotateTransform.Angle" Value="360" /></KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
     </Window.Styles>
 
     <!--
@@ -2201,10 +2212,15 @@
                             <Panel>
                                 <controls:TablerIcon Size="26" Filled="True" Data="{StaticResource IconPlay}"
                                                      Brush="{Binding $parent[Button].Foreground}"
-                                                     IsVisible="{Binding !IsPlaying}" />
+                                                     IsVisible="{Binding ShowsPlayGlyph}" />
                                 <controls:TablerIcon Size="26" Filled="True" Data="{StaticResource IconPause}"
                                                      Brush="{Binding $parent[Button].Foreground}"
-                                                     IsVisible="{Binding IsPlaying}" />
+                                                     IsVisible="{Binding ShowsPauseGlyph}" />
+                                <controls:TablerIcon Classes="spin" Size="24" Data="{StaticResource IconLoader}"
+                                                     Brush="{Binding $parent[Button].Foreground}"
+                                                     IsVisible="{Binding IsBuffering}">
+                                    <controls:TablerIcon.RenderTransform><RotateTransform /></controls:TablerIcon.RenderTransform>
+                                </controls:TablerIcon>
                             </Panel>
                         </Button>
                         <Button Classes="transport lead" Command="{Binding NextCommand}"
@@ -2442,9 +2458,13 @@
                     <Button Classes="play big onArtwork" Command="{Binding TogglePlayPauseCommand}">
                         <Panel>
                             <controls:TablerIcon Size="28" Filled="True" Data="{StaticResource IconPlay}"
-                                                 Brush="{Binding $parent[Button].Foreground}" IsVisible="{Binding !IsPlaying}" />
+                                                 Brush="{Binding $parent[Button].Foreground}" IsVisible="{Binding ShowsPlayGlyph}" />
                             <controls:TablerIcon Size="28" Filled="True" Data="{StaticResource IconPause}"
-                                                 Brush="{Binding $parent[Button].Foreground}" IsVisible="{Binding IsPlaying}" />
+                                                 Brush="{Binding $parent[Button].Foreground}" IsVisible="{Binding ShowsPauseGlyph}" />
+                            <controls:TablerIcon Classes="spin" Size="26" Data="{StaticResource IconLoader}"
+                                                 Brush="{Binding $parent[Button].Foreground}" IsVisible="{Binding IsBuffering}">
+                                <controls:TablerIcon.RenderTransform><RotateTransform /></controls:TablerIcon.RenderTransform>
+                            </controls:TablerIcon>
                         </Panel>
                     </Button>
                     <Button Classes="transport lead big" Command="{Binding NextCommand}" ToolTip.Tip="Next">

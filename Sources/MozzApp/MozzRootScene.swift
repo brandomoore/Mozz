@@ -32,6 +32,10 @@ public struct MozzRootScene: Scene {
                     // already-synced library keeps filling in without a manual sync.
                     // No-op when disabled or already running.
                     if phase == .active {
+                        // Connections to the server go stale while the app is
+                        // suspended; reopen one now so the first tap doesn't
+                        // pay for it.
+                        env.prewarmActiveServer()
                         env.resumeEnrichmentIfNeeded()
                         // Analysis only runs on a charger and an unmetered
                         // network, so most foregrounds are a no-op; the ones

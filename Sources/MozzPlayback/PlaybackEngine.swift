@@ -317,6 +317,16 @@ public final class PlaybackEngine {
     /// waiting for `currentTrackID` to reach; `nil` when nothing is pre-rolled.
     @ObservationIgnored
     private var prerolledKey: UInt64?
+    /// Where the engine's playhead stood when we asked it to play, while we are
+    /// still waiting to hear anything. `nil` once audio is actually coming out.
+    ///
+    /// The engine flips to `.playing` the moment it is handed a stream, long
+    /// before the first byte arrives — and this used to publish `.playing` at the
+    /// same moment. On a cold launch, when the first request can take seconds,
+    /// the player therefore showed a pause button over silence: nothing said it
+    /// was trying. Status now stays `.buffering` until the playhead genuinely
+    /// moves past this point, which only happens once samples are flowing.
+    private var awaitingAudioFrom: Double?
     /// The repeating main-actor timer that polls engine progress + ticks the UI
     /// position. Replaces the old periodic time-observer + end/failure
     /// notifications. Deliberately a RunLoop timer: it must not fire during the
@@ -550,15 +560,42 @@ public final class PlaybackEngine {
         try? session.activate()
         ensureEngine()
         audio?.resume()
-        publish(status: .playing)
-        report(.playing)
+        beginAwaitingAudio(from: audio?.positionSeconds ?? 0)
         emitCheckpoint(.transportChanged)
         // Covers the paused-load case (e.g. `previous()` while paused): the
         // track was loaded without a `.started`, so log it now that it plays.
         if loggedTrackID == nil { logStart(track) }
     }
 
+    /// Publish that playback has been asked for, and hold `.buffering` until the
+    /// engine proves it with a moving playhead (see ``awaitingAudioFrom``).
+    /// Without an engine there is nothing to wait for, so it is `.playing` at once.
+    private func beginAwaitingAudio(from start: TimeInterval) {
+        guard audio != nil else {
+            awaitingAudioFrom = nil
+            publish(status: .playing)
+            report(.playing)
+            return
+        }
+        awaitingAudioFrom = start
+        publish(status: .buffering)
+    }
+
+    /// Called from the timer: the moment the playhead moves past where it
+    /// started, audio is really playing — say so, and tell the server.
+    private func confirmAudioIfFlowing() {
+        guard let start = awaitingAudioFrom,
+              snapshot.status == .buffering,
+              let audio, audio.state == .playing else { return }
+        let raw = audio.positionSeconds
+        guard raw.isFinite, raw > start + 0.05 else { return }
+        awaitingAudioFrom = nil
+        publish(status: .playing)
+        report(.playing)
+    }
+
     public func pause() {
+        awaitingAudioFrom = nil
         audio?.pause()
         publish(status: .paused)
         report(.paused)
@@ -691,6 +728,7 @@ public final class PlaybackEngine {
         // end of the queue, `handleNaturalFinish` has already logged `.completed`
         // and cleared the pending track, so this no-ops — no double count.)
         logTerminal(.skipped, position: snapshot.elapsed)
+        awaitingAudioFrom = nil
         cancelRecovery()
         prerolledKey = nil
         audio?.stop()
@@ -716,6 +754,7 @@ public final class PlaybackEngine {
                         initialElapsed: TimeInterval? = 0) {
         loadGeneration += 1
         let generation = loadGeneration
+        awaitingAudioFrom = nil
         cancelRecovery()          // a fresh load abandons any in-flight recovery
         prerolledKey = nil
         audio?.stop()
@@ -763,8 +802,7 @@ public final class PlaybackEngine {
                 self.consecutiveLoadFailures = 0
                 self.lastFailure = nil
                 if autoplay {
-                    self.publish(status: .playing)
-                    self.report(.playing)
+                    self.beginAwaitingAudio(from: seek ?? 0)
                 } else {
                     self.publish(status: .paused)
                 }
@@ -951,8 +989,8 @@ public final class PlaybackEngine {
                 self.startEngine(with: loadedItem, autoplay: wasPlaying,
                                  seekTo: (!useServerSeek && elapsed > 0) ? elapsed : nil)
                 if wasPlaying {
-                    self.publish(status: .playing)
-                    self.report(.playing)
+                    // A server-seek transcode restarts its own playhead at 0.
+                    self.beginAwaitingAudio(from: useServerSeek ? 0 : elapsed)
                 } else {
                     self.publish(status: .paused)
                 }
@@ -1104,6 +1142,7 @@ public final class PlaybackEngine {
                 guard let self else { return }
                 self.pollEngineProgress()
                 self.tick()
+                self.confirmAudioIfFlowing()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -1255,6 +1294,7 @@ public final class PlaybackEngine {
     func refreshNowForTesting() {
         pollEngineProgress()
         tick()
+        confirmAudioIfFlowing()
     }
 
     private func tick() {

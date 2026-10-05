@@ -36,6 +36,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -1907,7 +1908,11 @@ private fun Transport(
             onClick = { playback.previous() },
         )
 
-        PlayButton(isPlaying = state.isPlaying, onClick = playback::togglePlayPause)
+        PlayButton(
+            isPlaying = state.isPlaying,
+            isBuffering = state.isBuffering,
+            onClick = playback::togglePlayPause,
+        )
 
         TransportButton(
             icon = R.drawable.ic_skip_forward,
@@ -1979,12 +1984,17 @@ private fun TransportButton(
  * toggle as a physical switch rather than a picture changing.
  */
 @Composable
-private fun PlayButton(isPlaying: Boolean, onClick: () -> Unit) {
+private fun PlayButton(isPlaying: Boolean, isBuffering: Boolean, onClick: () -> Unit) {
+    // Buffering — asked to play, no sound yet — shows a spinner rather than
+    // either glyph: "play" there reads as a tap that did not land, and "pause"
+    // over silence reads as broken. Tapping still cancels. Same as iOS.
+    val showsPlay = !isPlaying && !isBuffering
+    val showsPause = isPlaying && !isBuffering
     val swap = spring<Float>(dampingRatio = 0.62f, stiffness = 246f)
-    val playAlpha by animateFloatAsState(if (isPlaying) 0f else 1f, swap, label = "play-glyph")
-    val playScale by animateFloatAsState(if (isPlaying) 0.62f else 1f, swap, label = "play-scale")
-    val pauseAlpha by animateFloatAsState(if (isPlaying) 1f else 0f, swap, label = "pause-glyph")
-    val pauseScale by animateFloatAsState(if (isPlaying) 1f else 0.62f, swap, label = "pause-scale")
+    val playAlpha by animateFloatAsState(if (showsPlay) 1f else 0f, swap, label = "play-glyph")
+    val playScale by animateFloatAsState(if (showsPlay) 1f else 0.62f, swap, label = "play-scale")
+    val pauseAlpha by animateFloatAsState(if (showsPause) 1f else 0f, swap, label = "pause-glyph")
+    val pauseScale by animateFloatAsState(if (showsPause) 1f else 0.62f, swap, label = "pause-scale")
 
     Box(
         modifier = Modifier
@@ -2003,12 +2013,23 @@ private fun PlayButton(isPlaying: Boolean, onClick: () -> Unit) {
         )
         Icon(
             painterResource(R.drawable.ic_pause),
-            contentDescription = if (isPlaying) "Pause" else "Play",
+            contentDescription = when {
+                isBuffering -> "Loading"
+                isPlaying -> "Pause"
+                else -> "Play"
+            },
             tint = PlayerForeground,
             modifier = Modifier
                 .size(PLAY_GLYPH)
                 .graphicsLayer { alpha = pauseAlpha; scaleX = pauseScale; scaleY = pauseScale },
         )
+        if (isBuffering) {
+            CircularProgressIndicator(
+                color = PlayerForeground,
+                strokeWidth = 3.dp,
+                modifier = Modifier.size(PLAY_GLYPH),
+            )
+        }
     }
 }
 

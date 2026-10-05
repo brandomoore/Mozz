@@ -45,27 +45,84 @@ private let playbackSettingsLog = Logger(
 public final class SwappableResolver: TrackURLResolver, @unchecked Sendable {
     private let lock = NSLock()
     private var delegate: (any TrackURLResolver)?
+    private var waiters: [UUID: CheckedContinuation<(any TrackURLResolver)?, Never>] = [:]
 
-    public init() {}
+    /// How long a play may wait for the server to come up before giving up.
+    ///
+    /// Launch restores the server in the background — build the backend, detect
+    /// its capabilities, and if the stored address has stopped answering, ask
+    /// Plex for one that works. That is several round trips, and the library is
+    /// on screen from the local database long before it finishes. A song tapped
+    /// in that window used to fail at once with "No active server", and the
+    /// failure handler then skipped through the queue failing on each — which is
+    /// why skipping by hand a few seconds later appeared to fix it. Now the play
+    /// waits for the server instead, behind a visible buffering state.
+    private let readyTimeout: TimeInterval
 
-    public func setDelegate(_ resolver: any TrackURLResolver) {
-        lock.lock(); delegate = resolver; lock.unlock()
+    public init(readyTimeout: TimeInterval = 30) {
+        self.readyTimeout = readyTimeout
     }
 
-    private func currentDelegate() -> (any TrackURLResolver)? {
-        lock.lock(); defer { lock.unlock() }
-        return delegate
+    public func setDelegate(_ resolver: any TrackURLResolver) {
+        lock.lock()
+        delegate = resolver
+        let waiting = waiters
+        waiters.removeAll()
+        lock.unlock()
+        for continuation in waiting.values { continuation.resume(returning: resolver) }
+    }
+
+    /// The current delegate, or — when there is none yet — the first one to be
+    /// installed within ``readyTimeout``.
+    private func readyDelegate() async throws -> any TrackURLResolver {
+        lock.lock()
+        if let delegate { lock.unlock(); return delegate }
+        lock.unlock()
+
+        let id = UUID()
+        let timeout = readyTimeout
+        let timer = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            self?.expire(id)
+        }
+        defer { timer.cancel() }
+
+        let resolved: (any TrackURLResolver)? = await withCheckedContinuation { continuation in
+            lock.lock()
+            if let delegate {
+                lock.unlock()
+                continuation.resume(returning: delegate)
+            } else {
+                waiters[id] = continuation
+                lock.unlock()
+            }
+        }
+        guard let resolved else { throw MozzError.unsupported("No active server") }
+        return resolved
+    }
+
+    private func expire(_ id: UUID) {
+        lock.lock()
+        let continuation = waiters.removeValue(forKey: id)
+        lock.unlock()
+        continuation?.resume(returning: nil)
     }
 
     public func resolve(_ track: Track) async throws -> ResolvedTrackURL {
-        guard let current = currentDelegate() else { throw MozzError.unsupported("No active server") }
-        return try await current.resolve(track)
+        try await readyDelegate().resolve(track)
     }
 
     public func resolve(_ track: Track, startSeconds: TimeInterval) async throws -> ResolvedTrackURL {
-        guard let current = currentDelegate() else { throw MozzError.unsupported("No active server") }
-        return try await current.resolve(track, startSeconds: startSeconds)
+        try await readyDelegate().resolve(track, startSeconds: startSeconds)
     }
+}
+
+/// Streaming when the server could not be activated: fails at once, with the
+/// reason, so playback reports it instead of waiting for a server that is not
+/// coming. Downloads never reach this — the offline resolver answers them first.
+struct FailingTrackURLResolver: TrackURLResolver {
+    let error: MozzError
+    func resolve(_ track: Track) async throws -> ResolvedTrackURL { throw error }
 }
 
 /// The active server plus everything derived from it.
@@ -154,6 +211,9 @@ public final class AppEnvironment: ObservableObject {
     public let toasts = ToastCenter()
 
     private let resolver = SwappableResolver()
+    /// Streaming for the server being restored, released only once activation
+    /// has confirmed an address that answers. Downloaded tracks never wait on it.
+    private var pendingStreaming = SwappableResolver()
     /// Shared lyrics resolution, used both by the player and by the download hook
     /// that saves lyrics for offline listening.
     let lyricsService = LyricsService()
@@ -643,8 +703,51 @@ public final class AppEnvironment: ObservableObject {
             try await activateDemo()
             return
         }
+        let (connection, backend) = try await buildBackend(from: stored)
+
+        // Let playback start before the server has been checked.
+        //
+        // Everything below this point is network — capability detection, and
+        // for Plex possibly asking the account for a working address — and none
+        // of it is needed to play a download. So downloads resolve now, from
+        // disk. Streaming deliberately does not: handing playback the stored
+        // address before it has been confirmed would, when that address has
+        // stopped answering, sit on a dead connection until the stream times
+        // out. It waits instead on `pendingStreaming`, which `finishActivation`
+        // releases with whichever address actually worked.
+        //
+        // Cold start only. When switching from one live server to another, the
+        // current server keeps serving playback until the new one is confirmed,
+        // exactly as before; only a launch has nothing to fall back on.
+        if active == nil {
+            pendingStreaming = SwappableResolver()
+            resolver.setDelegate(OfflineTrackURLResolver(
+                serverId: connection.id,
+                repository: repository,
+                fileStore: fileStore,
+                fallback: pendingStreaming
+            ))
+        }
+        do {
+            try await confirmAndFinishActivation(stored: stored, connection: connection, backend: backend)
+        } catch {
+            // Streams tapped during launch are waiting on this. It is not coming,
+            // so say why now rather than let each sit out the resolver's timeout.
+            pendingStreaming.setDelegate(FailingTrackURLResolver(
+                error: (error as? MozzError) ?? .serverUnreachable))
+            throw error
+        }
+    }
+
+    /// The network half of activating a stored session: confirm the server
+    /// answers (repointing a Plex account at a working address if not), record
+    /// what it can do, and make it the active server.
+    private func confirmAndFinishActivation(
+        stored: StoredSession, connection: ServerConnection, backend: any MusicBackend
+    ) async throws {
         var stored = stored
-        var (connection, backend) = try await buildBackend(from: stored)
+        var connection = connection
+        var backend = backend
         if stored.kind == .plex {
             try await CatalogSnapshotDatabase(database)
                 .repairPlexServerIdentities()
@@ -681,14 +784,56 @@ public final class AppEnvironment: ObservableObject {
         finishActivation(connection: connection, backend: backend, capabilities: resolved.capabilities)
     }
 
+    /// When the server connection was last opened ahead of need.
+    private var lastPrewarm: (serverId: ServerID, at: Date)?
+
+    /// Open a connection to the active server before anything needs one.
+    public func prewarmActiveServer() {
+        guard let connection = active?.connection else { return }
+        prewarmStreaming(connection: connection)
+    }
+
+    /// Put a live connection to `connection`'s host into the pool the audio
+    /// stream reads through, so the first chunk of the first song does not also
+    /// pay for DNS, TCP and TLS.
+    ///
+    /// On a cold launch that setup is most of what the first play waits for —
+    /// once one connection exists, songs start promptly, which is exactly what
+    /// was reported: slow until something had connected, fine after. The stream
+    /// (`HTTPStream`) uses `URLSession.shared`, so this must too; a warm
+    /// connection in the backend's own session would not be reused.
+    ///
+    /// HEAD on the base URL, unauthenticated. The answer does not matter — a 401
+    /// warms the connection as well as a 200 — and sending no token means
+    /// nothing sensitive goes anywhere. LAN servers are warmed too: a Plex LAN
+    /// address is usually `*.plex.direct` over HTTPS, so it still pays a DNS
+    /// lookup and a TLS handshake, and activation has already spoken to the same
+    /// address, so this raises no permission prompt of its own. Throttled, since
+    /// every foreground calls this.
+    private func prewarmStreaming(connection: ServerConnection) {
+        guard connection.baseURL.scheme?.hasPrefix("http") == true else { return }
+        if let last = lastPrewarm, last.serverId == connection.id,
+           Date().timeIntervalSince(last.at) < 30 { return }
+        lastPrewarm = (connection.id, Date())
+        var request = URLRequest(url: connection.baseURL)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 10
+        URLSession.shared.dataTask(with: request).resume()
+    }
+
     private func finishActivation(connection: ServerConnection, backend: any MusicBackend, capabilities: ServerCapabilities) {
+        let streaming = StreamingTrackURLResolver(backend: backend)
         let offline = OfflineTrackURLResolver(
             serverId: connection.id,
             repository: repository,
             fileStore: fileStore,
-            fallback: StreamingTrackURLResolver(backend: backend)
+            fallback: streaming
         )
         resolver.setDelegate(offline)
+        // Anything that was tapped during launch and is waiting on a stream
+        // proceeds now, against the confirmed backend.
+        pendingStreaming.setDelegate(streaming)
+        prewarmStreaming(connection: connection)
         // End any station only on an actual server SWITCH — not on same-server
         // rebuilds (Sync Now / library-selection changes also route through here),
         // which must not kill a live station's auto-extend. `active` still holds

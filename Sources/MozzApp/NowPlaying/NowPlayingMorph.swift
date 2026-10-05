@@ -1912,7 +1912,8 @@ struct NowPlayingMorphContainer: View {
                                 label: "Previous") { playback.previous() }
                 .frame(width: Self.transportColumns[1])
             if modes { Spacer(minLength: 12) }
-            PlayPauseButton(playing: playing) { playback.togglePlayPause() }
+            PlayPauseButton(playing: playing,
+                            buffering: snapshot.status == .buffering) { playback.togglePlayPause() }
                 .frame(width: Self.transportColumns[2])
             if modes { Spacer(minLength: 12) }
             TransportSkipButton(travel: .forward,
@@ -2562,11 +2563,21 @@ private struct IslandContent: View {
             }
 
             Button { playback.togglePlayPause() } label: {
-                (playback.snapshot.status == .playing ? AppIcon.pause : AppIcon.play)
-                    .styled(size: 20)
-                    .frame(width: 30, height: 30).contentShape(Rectangle())
+                // A spinner while a play is waiting for sound, so a cold-launch
+                // tap visibly does something (see PlayPauseButton.buffering).
+                Group {
+                    if playback.snapshot.status == .buffering {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        (playback.snapshot.status == .playing ? AppIcon.pause : AppIcon.play)
+                            .styled(size: 20)
+                    }
+                }
+                .frame(width: 30, height: 30).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(playback.snapshot.status == .buffering ? "Loading"
+                                : (playback.snapshot.status == .playing ? "Pause" : "Play"))
 
             Button {
                 // Skip button runs the same slide as a swipe (from rest).
