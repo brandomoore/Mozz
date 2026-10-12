@@ -8,16 +8,16 @@ manual path because Apple requires it to be.
 
 ```bash
 # 1. Bump the version. This file is the single source for every platform.
-$EDITOR project.yml          # MARKETING_VERSION: "2026.9.21"
+$EDITOR project.yml          # MARKETING_VERSION: "0.1.0"
 
 # 2. Write what changed.
-$EDITOR CHANGELOG.md         # add a "## 2026.9.21" section at the top
+$EDITOR CHANGELOG.md         # add a "## 0.1.0" section at the top
 
 # 3. Land both on main, then tag it.
-git commit -am "Mozz 2026.9.21"
+git commit -am "Mozz 0.1.0"
 git push origin main
-git tag -a v2026.9.21 -m "Mozz 2026.9.21 — <highlights>"
-git push origin v2026.9.21
+git tag -a v0.1.0 -m "Mozz 0.1.0 — <highlights>"
+git push origin v0.1.0
 ```
 
 Pushing the tag starts `.github/workflows/release.yml`. It takes roughly an hour,
@@ -44,7 +44,8 @@ The release workflow **refuses to run if the tag and `project.yml` disagree**.
 That check exists because the three clients once shipped three different version
 numbers for the same commit, which makes a bug report impossible to place.
 
-CalVer, `YYYY.M.D`. A second release the same day is `2026.9.21.1`.
+Public releases use semantic versioning, beginning with `0.1.0` while the app is
+pre-1.0. Existing CalVer tags remain historical references; do not rewrite them.
 
 ## Secrets the workflow needs
 
@@ -104,8 +105,9 @@ with credentials that are not in this repository.
 fastlane beta --env fastlane      # TestFlight
 ```
 
-The build number fastlane stamps should match the tag's, so a TestFlight build
-maps back to an exact commit. See `fastlane/README.md`.
+Fastlane assigns a monotonically increasing build number from TestFlight,
+independent of the commit count. Tag the exact uploaded commit so the marketing
+version and TestFlight build map back to its source. See `fastlane/README.md`.
 
 ## What is still manual, and what it would take
 

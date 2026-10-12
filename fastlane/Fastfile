@@ -1,7 +1,7 @@
 # Fastfile — App Store Connect automation for Mozz (iOS/iPadOS)
 #
-# Authentication is an App Store Connect API key, not an Apple ID, so these
-# lanes run unattended with no 2FA prompt. Provide via `.env.fastlane`
+# Upload authentication is an App Store Connect API key, not an Apple ID.
+# Provision distribution profiles in Xcode once. Provide via `.env.fastlane`
 # (see .env.fastlane.example) and run lanes with `--env fastlane`:
 #
 #   ASC_KEY_ID      Key ID     from App Store Connect > Integrations
@@ -15,8 +15,9 @@
 #   fastlane release             --env fastlane    # build + upload to App Store
 #   fastlane testflight_link     --env fastlane    # print the public beta link
 #
-# Distribution signing is handled by `build` via -allowProvisioningUpdates plus
-# the API key, so the widget extension's profile is created on first run too.
+# App Store Connect operations use the API key. Distribution signing uses the
+# paid team already signed into Xcode on this machine; App Manager API keys
+# cannot create provisioning profiles.
 
 require "shellwords"
 require "json"
@@ -28,6 +29,7 @@ require File.expand_path("../tools/lib/apple_build_lease", __dir__)
 
 APP_IDENTIFIER = "com.thatcube.Mozz"
 APP_NAME       = "Mozz"
+TEAM_ID        = "N8Z5T4AK3X"
 XCODEPROJ      = "Mozz.xcodeproj"
 SCHEME         = "Mozz"
 OUTPUT_DIR     = "build"
@@ -38,6 +40,8 @@ ARCHIVE_PATH   = File.join(OUTPUT_DIR, "Mozz.xcarchive")
 # `bootstrap_testflight` rather than by hand, because it also has to be the
 # group that carries the public link.
 EXTERNAL_GROUP = "Mozz Public Beta"
+
+ENV["FASTLANE_SKIP_DOCS"] = "1"
 
 # The host GitHub desktop/CLI app injects safe.bareRepository=explicit via
 # GIT_CONFIG_* env vars, which breaks SwiftPM's bare dependency checkouts during
@@ -306,25 +310,24 @@ lane :build do
     ENV["MOZZ_MARKETING_VERSION"] = marketing_version
     UI.message("Build #{build_number} (CFBundleVersion), version #{marketing_version}")
 
+    sh("cd .. && ./tools/build-audio-xcframework.sh --all")
     generate_project
 
-    prov_args = "-allowProvisioningUpdates"
-    if ENV["ASC_KEY_ID"] && ENV["ASC_ISSUER_ID"] && ENV["ASC_KEY_PATH"]
-      prov_args += " -authenticationKeyPath #{ENV['ASC_KEY_PATH'].shellescape}" \
-                   " -authenticationKeyID #{ENV['ASC_KEY_ID'].shellescape}" \
-                   " -authenticationKeyIssuerID #{ENV['ASC_ISSUER_ID'].shellescape}"
-    end
+    signing_args = "-allowProvisioningUpdates " \
+                   "CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES " \
+                   "CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM=#{TEAM_ID}"
 
     build_app(
       project: XCODEPROJ,
       scheme: SCHEME,
       configuration: "Release",
       export_method: "app-store",
+      export_team_id: TEAM_ID,
       output_directory: OUTPUT_DIR,
       output_name: OUTPUT_NAME,
       archive_path: ARCHIVE_PATH,
       clean: true,
-      xcargs: prov_args
+      xcargs: signing_args
     )
     build_number
   end
