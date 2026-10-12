@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>IntentPhrases</key>
+    <array>
+        <dict>
+            <key>IntentName</key>
+            <string>INPlayMediaIntent</string>
+            <key>IntentExamples</key>
+            <array>
+                <string>Play my music on Mozz.</string>
+                <string>Shuffle my music on Mozz.</string>
+            </array>
+        </dict>
+        <dict>
+            <key>IntentName</key>
+            <string>INAddMediaIntent</string>
+            <key>IntentExamples</key>
+            <array>
+                <string>Add this song to my library on Mozz.</string>
+            </array>
+        </dict>
+        <dict>
+            <key>IntentName</key>
+            <string>INUpdateMediaAffinityIntent</string>
+            <key>IntentExamples</key>
+            <array>
+                <string>I like this song on Mozz.</string>
+                <string>I do not like this song on Mozz.</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
