@@ -9,6 +9,11 @@
 #include <stdlib.h>
 
 /**
+ * Opaque handle to a filter bank plus its levelling gain.
+ */
+typedef struct MozzDsp MozzDsp;
+
+/**
  * Opaque player handle.
  */
 typedef struct MozzPlayer MozzPlayer;
@@ -60,6 +65,65 @@ typedef struct MozzSource {
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+/**
+ * Create a filter bank for a fixed stream format.
+ *
+ * Biquad coefficients are computed against a sample rate, so a stream that
+ * changes format needs a new handle rather than a reconfigured one.
+ *
+ * # Safety
+ * The returned pointer must be released with [`mozz_dsp_free`] exactly once.
+ */
+struct MozzDsp *mozz_dsp_new(uint32_t sample_rate, uint16_t channels);
+
+/**
+ * Replace the curve.
+ *
+ * `gains_db` is one value per ISO band, low to high; passing a different
+ * count is refused rather than padded, because a shell that disagrees with the
+ * core about how many bands there are has a bug worth finding.
+ *
+ * # Safety
+ * `dsp` must come from [`mozz_dsp_new`]. `gains_db` must point to at least
+ * `gain_count` readable `f64`s.
+ */
+bool mozz_dsp_set_equalizer(struct MozzDsp *dsp,
+                            const double *gains_db,
+                            uintptr_t gain_count,
+                            double preamp_db,
+                            bool enabled,
+                            uint32_t sample_rate);
+
+/**
+ * Set the levelling gain for the track now playing, in dB.
+ *
+ * Separate from the curve because it changes on every track while the curve
+ * changes when somebody opens Settings. `NaN` and infinities are refused —
+ * a bad gain silences a library rather than colouring it.
+ *
+ * # Safety
+ * `dsp` must come from [`mozz_dsp_new`].
+ */
+bool mozz_dsp_set_gain_db(struct MozzDsp *dsp, double gain_db);
+
+/**
+ * Filter `frames` of interleaved f32 in place.
+ *
+ * # Safety
+ * `samples` must point to at least `frames * channels` writable `f32`s, with
+ * `channels` as passed to [`mozz_dsp_new`].
+ */
+bool mozz_dsp_process(struct MozzDsp *dsp, float *samples, uintptr_t frames);
+
+/**
+ * Release a filter bank.
+ *
+ * # Safety
+ * `dsp` must come from [`mozz_dsp_new`] and must not be used afterwards.
+ * Passing null is allowed and does nothing.
+ */
+void mozz_dsp_free(struct MozzDsp *dsp);
 
 /**
  * Create a player. Returns null if the decode thread cannot be started.
