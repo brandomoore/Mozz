@@ -1,5 +1,6 @@
 package com.thatcube.mozz.playback
 
+import android.os.SystemClock
 import android.content.ComponentName
 import android.content.Context
 import androidx.core.net.toUri
@@ -49,9 +50,16 @@ data class PlaybackState(
     val intendsToPlay: Boolean = false,
     /**
      * Asked to play and not yet making sound: the stream address is still being
-     * resolved, or the player is filling its buffer. On a cold launch this is
-     * seconds, and the play button used to show "play" throughout — as if the
-     * tap had not registered. The UI shows a spinner instead.
+     * resolved, or the player is filling its buffer. The play button shows the
+     * pause glyph from the moment this is true — the press was taken — where it
+     * used to show "play" throughout, as if the tap had not registered.
+     */
+    val isAwaitingSound: Boolean = false,
+    /**
+     * [isAwaitingSound] for long enough to show: the play button draws a
+     * spinner. A resume is heard within milliseconds, and a spinner for those
+     * would flicker on every press of play, so it waits out [BUFFERING_GRACE_MS]
+     * first — the same grace as the iPhone and desktop apps.
      */
     val isBuffering: Boolean = false,
     val positionMillis: Long = 0,
@@ -479,13 +487,54 @@ class PlayerController(
      * quietly behind it; the last, once those are spent, is the one that offers
      * the button. A toast per attempt would be three apologies for one problem.
      */
-    /** See [PlaybackState.isBuffering]: the window before the player has anything. */
+    /** See [PlaybackState.isAwaitingSound]: the window before the player has anything. */
     private var starting = false
+
+    /** When the current wait for sound began, or null when nothing is waiting. */
+    private var awaitingSince: Long? = null
+    /** Re-publishes once the grace has passed, if the wait is still going. */
+    private var bufferingReveal: Job? = null
+
+    private fun awaitingSound(player: Player?): Boolean =
+        starting || (player?.let { it.playWhenReady && it.playbackState == Player.STATE_BUFFERING } ?: false)
+
+    /**
+     * Whether to show the spinner: only once a wait has lasted [BUFFERING_GRACE_MS].
+     * Schedules one re-publish for that moment, since nothing else would happen
+     * then to make the spinner appear.
+     */
+    private fun bufferingVisible(awaiting: Boolean): Boolean {
+        if (!awaiting) {
+            awaitingSince = null
+            bufferingReveal?.cancel()
+            bufferingReveal = null
+            return false
+        }
+        val now = SystemClock.elapsedRealtime()
+        val since = awaitingSince ?: now.also { awaitingSince = it }
+        val waited = now - since
+        if (waited >= BUFFERING_GRACE_MS) return true
+        if (bufferingReveal == null) {
+            bufferingReveal = scope.launch {
+                delay(BUFFERING_GRACE_MS - waited)
+                bufferingReveal = null
+                refreshAwaitingSound()
+            }
+        }
+        return false
+    }
+
+    private fun refreshAwaitingSound() {
+        val awaiting = awaitingSound(controller)
+        _state.value = _state.value.copy(
+            isAwaitingSound = awaiting,
+            isBuffering = bufferingVisible(awaiting),
+        )
+    }
 
     private fun markStarting(value: Boolean) {
         starting = value
-        _state.value = _state.value.copy(isBuffering = value ||
-            (controller?.let { it.playWhenReady && it.playbackState == Player.STATE_BUFFERING } ?: false))
+        refreshAwaitingSound()
     }
 
     private fun noteFailure(message: String) {
@@ -854,8 +903,8 @@ class PlayerController(
             // starts buffering. Anything that reacts to "is this playing" in the
             // UI wants this instead, or it flickers on every track change.
             intendsToPlay = player.playWhenReady,
-            isBuffering = starting ||
-                (player.playWhenReady && player.playbackState == Player.STATE_BUFFERING),
+            isAwaitingSound = awaitingSound(player),
+            isBuffering = bufferingVisible(awaitingSound(player)),
             positionMillis = player.currentPosition.coerceAtLeast(0),
             durationMillis = player.duration.takeIf { it > 0 } ?: 0,
             shuffle = player.shuffleModeEnabled,
@@ -911,6 +960,9 @@ class PlayerController(
     }
 
     private companion object {
+        /** How long a play may go unheard before the spinner shows. See [PlaybackState.isBuffering]. */
+        const val BUFFERING_GRACE_MS = 300L
+
         // A screen's worth of queue, not a whole library. 200 resolved URLs is
         // fast; 20,000 would not be, and nobody queues their entire collection
         // from a tap.

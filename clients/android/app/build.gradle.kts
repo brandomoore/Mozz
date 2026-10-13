@@ -202,5 +202,6 @@ dependencies {
     implementation(libs.androidx.media3.session)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
+    testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.junit)
 }

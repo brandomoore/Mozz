@@ -1909,7 +1909,9 @@ private fun Transport(
         )
 
         PlayButton(
-            isPlaying = state.isPlaying,
+            // Pause from the moment play is pressed: the press was taken, and the
+            // spinner takes over only if the wait outlasts the grace.
+            isPlaying = state.isPlaying || state.isAwaitingSound,
             isBuffering = state.isBuffering,
             onClick = playback::togglePlayPause,
         )

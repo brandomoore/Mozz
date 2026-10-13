@@ -462,9 +462,10 @@ private fun DockContent(
                     modifier = Modifier.size(20.dp),
                 )
             } else {
+                val showsPause = state.isPlaying || state.isAwaitingSound
                 Icon(
-                    painterResource(if (state.isPlaying) R.drawable.ic_pause else R.drawable.ic_play),
-                    contentDescription = if (state.isPlaying) "Pause" else "Play",
+                    painterResource(if (showsPause) R.drawable.ic_pause else R.drawable.ic_play),
+                    contentDescription = if (showsPause) "Pause" else "Play",
                     tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(22.dp),
                 )

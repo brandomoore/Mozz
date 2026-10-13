@@ -30,6 +30,7 @@ import com.thatcube.mozz.ui.SignInScreen
 import com.thatcube.mozz.ui.StartingScreen
 import com.thatcube.mozz.core.ServerAccount
 import com.thatcube.mozz.core.SyncStatus
+import com.thatcube.mozz.playback.ServerPrewarm
 import com.thatcube.mozz.ui.CredentialsScreen
 import com.thatcube.mozz.ui.PlexServerPickerScreen
 import com.thatcube.mozz.ui.QuickConnectScreen
@@ -92,7 +93,13 @@ class MainActivity : ComponentActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 try {
                     viewModel.state.collect { state ->
-                        if (state is AppState.Ready) sonicAnalysis.start(state.account.serverId)
+                        if (state is AppState.Ready) {
+                            sonicAnalysis.start(state.account.serverId)
+                            // Here, rather than once: this block re-runs every time the app
+                            // comes back to the foreground, which is exactly when connections
+                            // to the server have gone stale. Throttled inside.
+                            ServerPrewarm.prewarm(state.account.baseUrl)
+                        }
                     }
                 } finally {
                     sonicAnalysis.stop()
