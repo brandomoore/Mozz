@@ -88,9 +88,10 @@ public final class SwappableResolver: TrackURLResolver, @unchecked Sendable {
     /// waking with the rest when the server arrives and resolving a stream —
     /// for Plex, starting a transcode — that nobody will play.
     private func readyDelegate() async throws -> any TrackURLResolver {
-        lock.lock()
-        if let delegate { lock.unlock(); return delegate }
-        lock.unlock()
+        // Scoped: a bare lock()/unlock() pair is unavailable in an async
+        // function, since a suspension between them could hand the lock to
+        // another thread — an error in Swift 6.
+        if let ready = lock.withLock({ delegate }) { return ready }
 
         let id = UUID()
         let resolved: (any TrackURLResolver)? = await withTaskCancellationHandler {
