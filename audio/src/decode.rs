@@ -32,7 +32,7 @@ use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::units::Time;
+use symphonia::core::units::{Time, TimeBase, Timestamp};
 
 /// What went wrong, in terms a caller can act on.
 ///
@@ -78,6 +78,10 @@ pub struct AudioDecoder {
     format: Box<dyn FormatReader>,
     decoder: Box<dyn SymphoniaAudioDecoder>,
     track_id: u32,
+    /// What the container's timestamps count. Usually one sample frame, but
+    /// not always — an MP4 timescale can be anything — so seek results are
+    /// converted through it rather than assumed to be frames.
+    time_base: Option<TimeBase>,
     spec: StreamSpec,
     /// Scratch for interleaving, reused across packets so decoding a track does
     /// not allocate once per packet. Grows to the largest packet seen and then
@@ -113,11 +117,13 @@ impl AudioDecoder {
 
         // Containers can carry video and subtitles too; take the first track
         // that is actually audio rather than assuming track zero.
-        let (track_id, params) = format
+        let (track_id, time_base, params) = format
             .tracks()
             .iter()
             .find_map(|track| match track.codec_params.as_ref() {
-                Some(CodecParameters::Audio(audio)) => Some((track.id, audio.clone())),
+                Some(CodecParameters::Audio(audio)) => {
+                    Some((track.id, track.time_base, audio.clone()))
+                }
                 _ => None,
             })
             .ok_or_else(|| DecodeError::Unsupported("no decodable audio track".into()))?;
@@ -150,6 +156,7 @@ impl AudioDecoder {
             format,
             decoder,
             track_id,
+            time_base,
             spec: StreamSpec {
                 sample_rate,
                 channels,
@@ -212,7 +219,10 @@ impl AudioDecoder {
         }
     }
 
-    /// Seek to a position in seconds, returning the frame actually landed on.
+    /// Seek to a position in seconds, returning the frame actually landed on,
+    /// counted at the stream's own sample rate (see [`StreamSpec`]). Callers
+    /// that count frames at another rate — the device, after resampling — must
+    /// convert.
     ///
     /// Compressed formats seek to packet boundaries, so the result is usually
     /// near the request rather than exactly it. Reporting where it truly landed
@@ -238,9 +248,28 @@ impl AudioDecoder {
         // somewhere else that state describes audio that is no longer adjacent.
         self.decoder.reset();
 
-        // A negative timestamp is not a position in the audio; report the start
-        // rather than wrapping it into an enormous unsigned frame number.
-        Ok(seeked.actual_ts.get().max(0) as u64)
+        Ok(timestamp_to_frames(
+            seeked.actual_ts,
+            self.time_base,
+            self.spec.sample_rate,
+        ))
+    }
+}
+
+/// A container timestamp as a frame count at `sample_rate`.
+///
+/// The timestamp is in the track's time base, which is one sample frame only
+/// for some containers; an MP4 timescale or a Matroska millisecond clock is
+/// something else entirely, and reading those as frames put a seek's reported
+/// position anywhere. Through seconds it is frames for all of them. With no
+/// declared time base the timestamp is the only measure there is.
+fn timestamp_to_frames(ts: Timestamp, time_base: Option<TimeBase>, sample_rate: u32) -> u64 {
+    // A negative timestamp is not a position in the audio; report the start
+    // rather than wrapping it into an enormous unsigned frame number.
+    let raw = ts.get().max(0) as u64;
+    match time_base.and_then(|base| base.calc_time(ts)) {
+        Some(time) => (time.as_secs_f64().max(0.0) * sample_rate as f64).round() as u64,
+        None => raw,
     }
 }
 
@@ -293,6 +322,39 @@ impl<R: Read + Seek + Send + Sync> MediaSource for ReadSeekSource<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Timestamps are counted in the track's time base, not always in frames.
+    /// A millisecond clock (Matroska's default) at 1.5s is 1500 ticks, which
+    /// read as frames would put a 44.1 kHz track at 0.034s.
+    #[test]
+    fn a_timestamp_in_a_millisecond_time_base_becomes_frames_at_the_stream_rate() {
+        let millis = TimeBase::try_new(1, 1_000).unwrap();
+        assert_eq!(
+            timestamp_to_frames(Timestamp::new(1_500), Some(millis), 44_100),
+            66_150
+        );
+    }
+
+    /// Where the time base is one frame, the conversion is the identity.
+    #[test]
+    fn a_timestamp_in_a_per_frame_time_base_is_already_frames() {
+        let per_frame = TimeBase::try_from_recip(44_100).unwrap();
+        assert_eq!(
+            timestamp_to_frames(Timestamp::new(88_200), Some(per_frame), 44_100),
+            88_200
+        );
+    }
+
+    /// With no declared time base, and for a negative timestamp, nothing
+    /// better is known: the raw value, floored at the start.
+    #[test]
+    fn a_timestamp_with_no_time_base_is_taken_as_frames_and_never_negative() {
+        assert_eq!(
+            timestamp_to_frames(Timestamp::new(4_000), None, 8_000),
+            4_000
+        );
+        assert_eq!(timestamp_to_frames(Timestamp::new(-7), None, 8_000), 0);
+    }
     use std::io::Cursor;
 
     /// Build a WAV in memory so the tests do not depend on a fixture file, and
