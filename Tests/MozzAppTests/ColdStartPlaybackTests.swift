@@ -37,8 +37,9 @@ final class ColdStartPlaybackTests: XCTestCase {
             Track(id: "second", title: "Second", artistName: "A"),
         ])
 
-        // Activation is still running. The tap must neither fail nor move on.
-        try await Task.sleep(nanoseconds: 300_000_000)
+        // Activation is still running. The tap must neither fail nor move on —
+        // and, once the wait is long enough to notice, say it is waiting.
+        try await Task.sleep(nanoseconds: UInt64((PlaybackEngine.bufferingGrace + 0.3) * 1_000_000_000))
         engine.refreshNowForTesting()
         XCTAssertEqual(engine.snapshot.status, .buffering,
                        "a play waiting on the server should say it is waiting")
@@ -55,20 +56,26 @@ final class ColdStartPlaybackTests: XCTestCase {
         engine.stop()
     }
 
-    /// `.playing` means audio, not "a URL was handed over". Status stays
-    /// `.buffering` until the playhead moves, so the player can show a spinner
-    /// instead of a pause button over silence.
-    func testStatusIsBufferingUntilThePlayheadMoves() async throws {
+    /// `.playing` is confirmed by the engine hearing the track, and a resume —
+    /// heard within milliseconds — never flashes a spinner on the way.
+    func testAQuickResumeIsPlayingAtOnceWithoutASpinner() async throws {
         let url = try makeWav(seconds: 10)
         let engine = PlaybackEngine(resolver: FileResolver(url: url))
         engineUnderTest = engine
 
         engine.play(tracks: [Track(id: "t", title: "T", artistName: "A")])
-        XCTAssertEqual(engine.snapshot.status, .buffering)
-
         await eventually("audio starts") { engine.snapshot.status == .playing }
-        XCTAssertGreaterThan(engine.snapshot.elapsed, 0,
-                             "it said playing before the playhead had moved")
+        await eventually("the position moves") { engine.snapshot.elapsed > 0.05 }
+
+        engine.pause()
+        engine.resume()
+        XCTAssertEqual(engine.snapshot.status, .playing, "a resume should show as playing at once")
+        for _ in 0..<10 {
+            try await Task.sleep(nanoseconds: 25_000_000)
+            engine.refreshNowForTesting()
+            XCTAssertNotEqual(engine.snapshot.status, .buffering,
+                              "a resume heard at once flashed a spinner")
+        }
         engine.stop()
     }
 
@@ -113,6 +120,15 @@ final class ColdStartPlaybackTests: XCTestCase {
         await engine.awaitPendingLoadsForTesting()
         XCTAssertEqual(engine.snapshot.status, .paused)
 
+        // The progress timer runs while the app sits there before play is
+        // pressed. It used to copy the position of an engine that did not hold
+        // the song — there was no engine — and so wiped 0:05 to 0:00.
+        engine.refreshNowForTesting()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        engine.refreshNowForTesting()
+        XCTAssertEqual(engine.snapshot.elapsed, 5, accuracy: 0.001,
+                       "the restored position must survive until play is pressed")
+
         engine.resume()
 
         await eventually("the restored song plays") { engine.snapshot.status == .playing }
@@ -122,6 +138,82 @@ final class ColdStartPlaybackTests: XCTestCase {
         XCTAssertGreaterThan(engine.snapshot.elapsed, 4,
                              "it should continue from where it was left, not from the start")
         engine.stop()
+    }
+
+    /// A pause just after one song flows into the next pauses the NEXT song,
+    /// and resuming continues it — not the song that just finished.
+    ///
+    /// The engine joins tracks on its own; the app notices on its next poll,
+    /// up to half a second later. Resuming in between compared the engine's
+    /// track with the app's stale one, found them different, and restarted
+    /// the finished track.
+    func testResumingRightAfterAGaplessJoinContinuesTheNewTrack() async throws {
+        let short = try makeWav(seconds: 0.4)
+        let long = try makeWav(seconds: 10)
+        let engine = PlaybackEngine(resolver: PerTrackResolver(urls: ["a": short, "b": long]))
+        engineUnderTest = engine
+        engine.stopProgressTimerForTesting()
+
+        engine.play(tracks: [Track(id: "a", title: "A", artistName: "X"),
+                             Track(id: "b", title: "B", artistName: "X")])
+        await engine.awaitPendingLoadsForTesting()
+        // Let "a" end and the engine cross into "b" — without refreshing, so
+        // the app has not noticed yet, exactly as between two polls.
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        XCTAssertEqual(engine.currentTrack?.id, "a", "precondition: the join is not yet noticed")
+
+        engine.pause()
+        engine.resume()
+
+        XCTAssertEqual(engine.currentTrack?.id, "b", "the resume must continue the song now playing")
+        await eventually("it plays") { engine.snapshot.status == .playing }
+        XCTAssertEqual(engine.currentTrack?.id, "b")
+        engine.stop()
+    }
+
+    /// A play abandoned while it waits for the server — a skip during launch —
+    /// is cancelled before it resolves anything. Only the song the listener
+    /// ended up on is resolved when the server arrives; the others used to
+    /// resolve too, and for Plex each one can start a transcode on the server.
+    func testPlaysSkippedWhileTheServerComesUpAreNeverResolved() async throws {
+        let url = try makeWav(seconds: 10)
+        let gate = SwappableResolver()
+        let engine = PlaybackEngine(resolver: gate)
+        engineUnderTest = engine
+
+        engine.play(tracks: ["a", "b", "c"].map { Track(id: $0, title: $0, artistName: "X") })
+        await engine.awaitPendingLoadsForTesting()
+        engine.next()
+        await engine.awaitPendingLoadsForTesting()
+        engine.next()
+        await engine.awaitPendingLoadsForTesting()
+
+        let counting = CountingResolver(url: url)
+        gate.setDelegate(counting)
+        // `.playing` alone is the play being accepted; wait for it to be heard.
+        await eventually("the song skipped to is heard") { engine.snapshot.elapsed > 0.05 }
+
+        XCTAssertEqual(engine.currentTrack?.id, "c")
+        XCTAssertEqual(counting.resolved, ["c"], "abandoned plays were resolved anyway")
+        engine.stop()
+    }
+
+    /// A wait whose task is cancelled ends at once, with the cancellation.
+    func testAWaitForTheServerEndsWhenItsTaskIsCancelled() async throws {
+        let gate = SwappableResolver(readyTimeout: 30)
+        let waiting = Task {
+            try await gate.resolve(Track(id: "t", title: "T", artistName: "A"))
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let started = Date()
+        waiting.cancel()
+        do {
+            _ = try await waiting.value
+            XCTFail("a cancelled wait resolved")
+        } catch is CancellationError {
+            XCTAssertLessThan(Date().timeIntervalSince(started), 1,
+                              "cancellation should end the wait immediately")
+        }
     }
 
     /// A paused track must stay paused when its stream fails.
@@ -168,6 +260,26 @@ final class ColdStartPlaybackTests: XCTestCase {
         let url: URL
         func resolve(_ track: Track) async throws -> ResolvedTrackURL {
             ResolvedTrackURL(url: url, isLocal: true)
+        }
+    }
+
+    private struct PerTrackResolver: TrackURLResolver {
+        let urls: [String: URL]
+        func resolve(_ track: Track) async throws -> ResolvedTrackURL {
+            ResolvedTrackURL(url: urls[track.id]!, isLocal: true)
+        }
+    }
+
+    /// Records which tracks were resolved.
+    private final class CountingResolver: TrackURLResolver, @unchecked Sendable {
+        private let lock = NSLock()
+        private var ids: [String] = []
+        let url: URL
+        init(url: URL) { self.url = url }
+        var resolved: [String] { lock.lock(); defer { lock.unlock() }; return ids }
+        func resolve(_ track: Track) async throws -> ResolvedTrackURL {
+            lock.lock(); ids.append(track.id); lock.unlock()
+            return ResolvedTrackURL(url: url, isLocal: true)
         }
     }
 

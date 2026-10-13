@@ -317,25 +317,41 @@ public final class PlaybackEngine {
     /// waiting for `currentTrackID` to reach; `nil` when nothing is pre-rolled.
     @ObservationIgnored
     private var prerolledKey: UInt64?
-    /// Where the engine's playhead stood when we asked it to play, while we are
-    /// still waiting to hear anything. `nil` once audio is actually coming out.
+    /// A play that has been asked for and not yet heard. `nil` once sound is
+    /// coming out, or once nothing is being asked for.
     ///
-    /// The engine flips to `.playing` the moment it is handed a stream, long
-    /// before the first byte arrives — and this used to publish `.playing` at the
-    /// same moment. On a cold launch, when the first request can take seconds,
-    /// the player therefore showed a pause button over silence: nothing said it
-    /// was trying. Status now stays `.buffering` until the playhead genuinely
-    /// moves past this point, which only happens once samples are flowing.
-    private var awaitingAudioFrom: Double?
-    /// The first playhead reading taken while waiting. Audio is flowing once
-    /// the playhead moves away from it — wherever it started.
+    /// The engine says `.playing` the instant it accepts a track, which on a
+    /// cold network is seconds before anything is heard; publishing `.playing`
+    /// on that showed a pause button over silence. Whether sound is actually
+    /// coming out is now the engine's to say (`isWaitingForAudio`), and this
+    /// records which loaded item it has to be coming from — `key` is `nil` while
+    /// the item is still being resolved and the engine has nothing yet.
+    @ObservationIgnored
+    private var awaitingAudio: AwaitingAudio?
+    private struct AwaitingAudio {
+        var key: UInt64?
+        let since: Date
+    }
+    /// Checks `awaitingAudio` every 50ms while it is set — far more often than
+    /// the half-second progress timer, so "playing" is published when the sound
+    /// starts rather than up to half a second after it.
+    @ObservationIgnored
+    private var awaitingAudioTask: Task<Void, Never>?
+    /// How long a play may go unheard before the player shows a spinner.
     ///
-    /// Comparing only against the requested start was not enough: a seek that
-    /// does not land (the engine refuses it, or the format cannot seek) leaves
-    /// the playhead advancing from somewhere else, never past the target, and
-    /// the player would show a spinner forever over music that is plainly
-    /// playing.
-    private var awaitingAudioBaseline: Double?
+    /// Resuming a paused track is heard within a few milliseconds; showing a
+    /// spinner for those would be a flicker on every press of play. Under this
+    /// the transport shows the pause glyph — the play was accepted — and a
+    /// spinner appears only when the wait is long enough to notice.
+    static let bufferingGrace: TimeInterval = 0.3
+    /// The load in flight, so a newer one can cancel it.
+    ///
+    /// Superseded loads were left to finish and then discarded by the
+    /// generation check — after they had resolved a stream URL, which for Plex
+    /// can start a transcode session on the server. Skipping five times while
+    /// the server came up at launch queued five such resolutions behind it.
+    @ObservationIgnored
+    private var loadTask: Task<Void, Never>?
     /// The repeating main-actor timer that polls engine progress + ticks the UI
     /// position. Replaces the old periodic time-observer + end/failure
     /// notifications. Deliberately a RunLoop timer: it must not fire during the
@@ -565,73 +581,115 @@ public final class PlaybackEngine {
     }
 
     public func resume() {
-        guard let track = currentTrack else { return }
+        guard currentTrack != nil else { return }
         try? session.activate()
         let hadEngine = audio != nil
         ensureEngine()
+        // The engine may have crossed gaplessly into the next track in the
+        // moments before the poll noticed — a pause in that window is a pause
+        // of the NEXT track. Reconcile first, or the comparison below sees a
+        // mismatch and restarts the track that just finished.
+        if hadEngine, let key = prerolledKey, audio?.currentTrackID == key {
+            prerolledKey = nil
+            handleNaturalFinish()
+        }
+        // Read after reconciling: the track may have changed, or the queue ended.
+        guard let track = currentTrack else { return }
 
-        // The engine may not have this track at all. A session restored at
-        // launch is loaded paused before any audio engine exists — the engine is
-        // only built on the first play — so `startEngine` had nothing to hand it
-        // to and returned. Resuming then resumed an empty engine: silence, a
-        // pause button (later a spinner) that never moved, until a skip did a
-        // real load. That was "the first song after launch doesn't play until I
-        // skip". Hand it over now, at the restored position.
-        if let item = loaded.first, !hadEngine || audio?.currentTrackID != item.key {
-            // A server-seek transcode was already requested at the offset.
-            let seekTo = item.requiresServerSeek || snapshot.elapsed <= 0 ? nil : snapshot.elapsed
-            startEngine(with: item, autoplay: true, seekTo: seekTo)
-            beginAwaitingAudio(from: seekTo ?? 0)
-        } else if loaded.isEmpty {
+        guard let item = loaded.first else {
             // Still resolving (the server may still be coming up). Restart the
             // load as a playing one, so it does not finish into a pause.
             pendingSeek = snapshot.elapsed > 1 ? snapshot.elapsed : nil
             reload(autoplay: true, logStartOnLoad: false, initialElapsed: nil)
-        } else {
-            audio?.resume()
-            beginAwaitingAudio(from: audio?.positionSeconds ?? 0)
+            emitCheckpoint(.transportChanged)
+            if loggedTrackID == nil { logStart(track) }
+            return
         }
+
+        // Resume only an engine that holds this track and can still play it.
+        // Otherwise hand it the track afresh, at the current position:
+        //  * none yet — the session restored at launch is loaded before any
+        //    engine exists (the engine is built on the first play), so it was
+        //    never handed over, and resuming an empty engine was silence until
+        //    a skip did a real load. That was "the first song after opening
+        //    doesn't play until I skip".
+        //  * ended or idle — its stream failed while paused, or it was stopped.
+        let engineHoldsIt = audio.map {
+            $0.currentTrackID == item.key && $0.state != .ended && $0.state != .idle
+        } ?? false
+        if engineHoldsIt {
+            audio?.resume()
+        } else {
+            // A server-seek transcode was already requested at its offset.
+            let seekTo = item.requiresServerSeek || snapshot.elapsed <= 0 ? nil : snapshot.elapsed
+            startEngine(with: item, autoplay: true, seekTo: seekTo)
+        }
+        beginAwaitingAudio(key: item.key)
         emitCheckpoint(.transportChanged)
         // Covers the paused-load case (e.g. `previous()` while paused): the
         // track was loaded without a `.started`, so log it now that it plays.
         if loggedTrackID == nil { logStart(track) }
     }
 
-    /// Publish that playback has been asked for, and hold `.buffering` until the
-    /// engine proves it with a moving playhead (see ``awaitingAudioFrom``).
-    /// Without an engine there is nothing to wait for, so it is `.playing` at once.
-    private func beginAwaitingAudio(from start: TimeInterval) {
+    /// Record that a play has been asked for, and publish it.
+    ///
+    /// Status is `.playing` at once — the request was accepted, and a resume is
+    /// heard within milliseconds — and turns to `.buffering` only if nothing is
+    /// heard within ``bufferingGrace``. `.playing` is reported to the server
+    /// when the engine confirms sound, not here. Calling this again during a
+    /// wait, to name the item once it has resolved, keeps the original start.
+    private func beginAwaitingAudio(key: UInt64?) {
         guard audio != nil else {
-            awaitingAudioFrom = nil
+            // No engine, nothing to wait on.
+            endAwaitingAudio()
             publish(status: .playing)
             report(.playing)
             return
         }
-        awaitingAudioFrom = start
-        awaitingAudioBaseline = nil
-        publish(status: .buffering)
+        let since = awaitingAudio?.since ?? Date()
+        awaitingAudio = AwaitingAudio(key: key, since: since)
+        if snapshot.status != .buffering { publish(status: .playing) }
+        checkAwaitedAudio()
+        guard awaitingAudio != nil, awaitingAudioTask == nil else { return }
+        awaitingAudioTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                guard let self, self.awaitingAudio != nil else { return }
+                self.checkAwaitedAudio()
+            }
+        }
     }
 
-    /// Called from the timer: the moment the playhead moves past where it
-    /// started, audio is really playing — say so, and tell the server.
-    private func confirmAudioIfFlowing() {
-        guard let start = awaitingAudioFrom,
-              snapshot.status == .buffering,
-              let audio, audio.state == .playing else { return }
-        let raw = audio.positionSeconds
-        guard raw.isFinite else { return }
-        let passedStart = raw > start + 0.05
-        let moved = awaitingAudioBaseline.map { abs(raw - $0) > 0.05 } ?? false
-        if awaitingAudioBaseline == nil { awaitingAudioBaseline = raw }
-        guard passedStart || moved else { return }
-        awaitingAudioFrom = nil
-        awaitingAudioBaseline = nil
-        publish(status: .playing)
-        report(.playing)
+    /// Stop waiting, without saying anything about why.
+    private func endAwaitingAudio() {
+        awaitingAudio = nil
+        awaitingAudioTask?.cancel()
+        awaitingAudioTask = nil
+    }
+
+    /// Is the engine making sound for the awaited item? Confirm it; otherwise,
+    /// once the grace has passed, say the player is buffering.
+    private func checkAwaitedAudio(now: Date = Date()) {
+        guard let waiting = awaitingAudio else { return }
+        if let key = waiting.key, let audio,
+           // Order matters: the track id is published after the engine starts
+           // waiting for it, so reading it first means the wait flag read next
+           // describes this track and not the one before.
+           audio.currentTrackID == key,
+           audio.state == .playing,
+           !audio.isWaitingForAudio {
+            endAwaitingAudio()
+            publish(status: .playing)
+            report(.playing)
+            return
+        }
+        if snapshot.status == .playing, now.timeIntervalSince(waiting.since) >= Self.bufferingGrace {
+            publish(status: .buffering)
+        }
     }
 
     public func pause() {
-        awaitingAudioFrom = nil
+        endAwaitingAudio()
         audio?.pause()
         publish(status: .paused)
         report(.paused)
@@ -764,7 +822,9 @@ public final class PlaybackEngine {
         // end of the queue, `handleNaturalFinish` has already logged `.completed`
         // and cleared the pending track, so this no-ops — no double count.)
         logTerminal(.skipped, position: snapshot.elapsed)
-        awaitingAudioFrom = nil
+        endAwaitingAudio()
+        loadTask?.cancel()
+        loadTask = nil
         cancelRecovery()
         prerolledKey = nil
         audio?.stop()
@@ -790,7 +850,8 @@ public final class PlaybackEngine {
                         initialElapsed: TimeInterval? = 0) {
         loadGeneration += 1
         let generation = loadGeneration
-        awaitingAudioFrom = nil
+        endAwaitingAudio()
+        loadTask?.cancel()
         cancelRecovery()          // a fresh load abandons any in-flight recovery
         prerolledKey = nil
         audio?.stop()
@@ -809,11 +870,15 @@ public final class PlaybackEngine {
             return
         }
         currentTrack = track
-        // `.buffering` only when this load is going to play. A paused load —
-        // the session restored at launch, a skip while paused — used to show
-        // `.buffering` until it finished, which the player now draws as a
-        // spinner, and which everything deciding "was it playing?" reads as yes.
-        publish(status: autoplay ? .buffering : .paused)
+        // A paused load — the session restored at launch, a skip while paused —
+        // says paused from the start. It used to say `.buffering` until it had
+        // resolved, which the player draws as a spinner and which everything
+        // deciding "was it playing?" reads as yes.
+        if autoplay {
+            beginAwaitingAudio(key: nil)
+        } else {
+            publish(status: .paused)
+        }
         onNeedsArtwork?(track)
         emitCheckpoint(.trackChanged)
         // Emit `.started` on intent (synchronously), so it's paired correctly
@@ -821,7 +886,7 @@ public final class PlaybackEngine {
         // or fails. A paused load (autoplay == false) logs its start on resume.
         if autoplay && logStartOnLoad { logStart(track) }
 
-        Task { [weak self] in
+        loadTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let loadedItem = try await self.makeLoadedItem(for: track, startSeconds: 0)
@@ -842,7 +907,7 @@ public final class PlaybackEngine {
                 self.consecutiveLoadFailures = 0
                 self.lastFailure = nil
                 if autoplay {
-                    self.beginAwaitingAudio(from: seek ?? 0)
+                    self.beginAwaitingAudio(key: loadedItem.key)
                 } else {
                     self.publish(status: .paused)
                 }
@@ -967,6 +1032,9 @@ public final class PlaybackEngine {
     /// didn't choose). Bounded by `maxConsecutiveLoadFailures`, so a queue where
     /// nothing is playable reports the failure instead of grinding through it.
     private func handleLoadFailure(track: Track, error: Error, autoplay: Bool) {
+        // Whatever happens next — a skip reloads and waits afresh, a stop says
+        // paused — this track is no longer going to be heard.
+        endAwaitingAudio()
         consecutiveLoadFailures += 1
         let reason = PlaybackFailure.Reason(error)
         // Only skip while playback was actually meant to be running. A paused
@@ -1017,6 +1085,7 @@ public final class PlaybackEngine {
         let wasPlaying = autoplay ?? (snapshot.status == .playing || snapshot.status == .buffering)
         loadGeneration += 1
         let generation = loadGeneration
+        loadTask?.cancel()
         recoveryTask?.cancel(); recoveryTask = nil
         prerolledKey = nil
         audio?.stop()
@@ -1025,9 +1094,14 @@ public final class PlaybackEngine {
         // on the first tick after the rebuild) and a failure before playback
         // recovers at the right spot rather than the stale pre-seek position.
         snapshot.elapsed = elapsed
-        publish(status: .buffering)
+        if wasPlaying {
+            beginAwaitingAudio(key: nil)
+        } else {
+            endAwaitingAudio()
+            publish(status: .paused)
+        }
 
-        Task { [weak self] in
+        loadTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let loadedItem = try await self.makeLoadedItem(
@@ -1042,8 +1116,7 @@ public final class PlaybackEngine {
                 self.startEngine(with: loadedItem, autoplay: wasPlaying,
                                  seekTo: (!useServerSeek && elapsed > 0) ? elapsed : nil)
                 if wasPlaying {
-                    // A server-seek transcode restarts its own playhead at 0.
-                    self.beginAwaitingAudio(from: useServerSeek ? 0 : elapsed)
+                    self.beginAwaitingAudio(key: loadedItem.key)
                 } else {
                     self.publish(status: .paused)
                 }
@@ -1054,6 +1127,7 @@ public final class PlaybackEngine {
                 // backend — it doesn't hit the network — so a throw here isn't the
                 // stream outage and retrying wouldn't help; just settle paused.
                 self.isRecovering = false
+                self.endAwaitingAudio()
                 self.publish(status: .paused)
             }
         }
@@ -1195,7 +1269,7 @@ public final class PlaybackEngine {
                 guard let self else { return }
                 self.pollEngineProgress()
                 self.tick()
-                self.confirmAudioIfFlowing()
+                self.checkAwaitedAudio()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -1311,6 +1385,8 @@ public final class PlaybackEngine {
             logStart(track)
         }
         snapshot.elapsed = 0
+        // Sound was already flowing across the join; nothing to wait for.
+        endAwaitingAudio()
         publish(status: .playing)
         report(.playing)
         refillLookahead()
@@ -1336,6 +1412,13 @@ public final class PlaybackEngine {
         syncReplayGain()
     }
 
+    /// Stop the progress timer, so a test can hold the app between two polls —
+    /// the window in which the engine has moved on and the app has not noticed.
+    func stopProgressTimerForTesting() {
+        progressTimer?.invalidate()
+        progressTimer = nil
+    }
+
     /// Refresh the snapshot now, instead of waiting for the timer.
     ///
     /// The snapshot is only as fresh as the last tick, which is fine for a
@@ -1347,7 +1430,7 @@ public final class PlaybackEngine {
     func refreshNowForTesting() {
         pollEngineProgress()
         tick()
-        confirmAudioIfFlowing()
+        checkAwaitedAudio()
     }
 
     private func tick() {
@@ -1355,8 +1438,19 @@ public final class PlaybackEngine {
         // A server-seeked/recovered transcode's playhead 0 is `startOffset` into
         // the track, so add it back to keep the reported position absolute.
         let base = loaded.first?.startOffset ?? 0
-        let raw = audio?.positionSeconds ?? 0
-        let elapsed = (raw.isFinite ? raw : 0) + base
+        // Read the engine's position only while it is playing what we show.
+        // Before it holds the current item — the session restored at launch has
+        // no engine at all, and a load in flight has stopped the old one — its
+        // position describes nothing on screen, and copying it replaced the
+        // restored position with 0:00 within half a second, so play then
+        // started the song from the top. While a play is still unheard the
+        // position cannot have moved, and the target already published stands.
+        var elapsed = snapshot.elapsed
+        if let key = loaded.first?.key, let audio, awaitingAudio == nil,
+           audio.currentTrackID == key {
+            let raw = audio.positionSeconds
+            elapsed = (raw.isFinite ? raw : 0) + base
+        }
         // The engine exposes no track duration, so the absolute duration comes
         // from the track's own metadata (a behavior change from the old engine,
         // which refined it from the decoded asset). Fall back to the last-known

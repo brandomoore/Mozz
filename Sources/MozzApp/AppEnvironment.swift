@@ -45,7 +45,12 @@ private let playbackSettingsLog = Logger(
 public final class SwappableResolver: TrackURLResolver, @unchecked Sendable {
     private let lock = NSLock()
     private var delegate: (any TrackURLResolver)?
-    private var waiters: [UUID: CheckedContinuation<(any TrackURLResolver)?, Never>] = [:]
+    /// Plays waiting for a delegate, each with the deadline that ends its wait.
+    private var waiters: [UUID: Waiter] = [:]
+    private struct Waiter {
+        let continuation: CheckedContinuation<(any TrackURLResolver)?, Never>
+        var deadline: Task<Void, Never>?
+    }
 
     /// How long a play may wait for the server to come up before giving up.
     ///
@@ -69,43 +74,68 @@ public final class SwappableResolver: TrackURLResolver, @unchecked Sendable {
         let waiting = waiters
         waiters.removeAll()
         lock.unlock()
-        for continuation in waiting.values { continuation.resume(returning: resolver) }
+        for waiter in waiting.values {
+            waiter.deadline?.cancel()
+            waiter.continuation.resume(returning: resolver)
+        }
     }
 
     /// The current delegate, or — when there is none yet — the first one to be
     /// installed within ``readyTimeout``.
+    ///
+    /// Cancellable, and cancelled for real: a load superseded while it waits
+    /// (a skip during launch) leaves here with `CancellationError` instead of
+    /// waking with the rest when the server arrives and resolving a stream —
+    /// for Plex, starting a transcode — that nobody will play.
     private func readyDelegate() async throws -> any TrackURLResolver {
         lock.lock()
         if let delegate { lock.unlock(); return delegate }
         lock.unlock()
 
         let id = UUID()
-        let timeout = readyTimeout
-        let timer = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-            self?.expire(id)
-        }
-        defer { timer.cancel() }
-
-        let resolved: (any TrackURLResolver)? = await withCheckedContinuation { continuation in
-            lock.lock()
-            if let delegate {
-                lock.unlock()
-                continuation.resume(returning: delegate)
-            } else {
-                waiters[id] = continuation
+        let resolved: (any TrackURLResolver)? = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                // Checked under the lock the cancellation handler also takes, so
+                // a cancellation lands either here or on a registered waiter —
+                // never in between, where it would be lost.
+                if let delegate {
+                    lock.unlock()
+                    continuation.resume(returning: delegate)
+                    return
+                }
+                if Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume(returning: nil)
+                    return
+                }
+                waiters[id] = Waiter(continuation: continuation, deadline: nil)
+                // The deadline is armed only now that there is a waiter for it
+                // to end; armed earlier, it could fire into nothing and leave
+                // the play waiting past it.
+                let timeout = readyTimeout
+                waiters[id]?.deadline = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    guard !Task.isCancelled else { return }
+                    self?.endWait(id)
+                }
                 lock.unlock()
             }
+        } onCancel: {
+            self.endWait(id)
         }
+        try Task.checkCancellation()
         guard let resolved else { throw MozzError.unsupported("No active server") }
         return resolved
     }
 
-    private func expire(_ id: UUID) {
+    /// End one wait with nothing — its deadline passed, or its load was cancelled.
+    private func endWait(_ id: UUID) {
         lock.lock()
-        let continuation = waiters.removeValue(forKey: id)
+        let waiter = waiters.removeValue(forKey: id)
         lock.unlock()
-        continuation?.resume(returning: nil)
+        waiter?.deadline?.cancel()
+        waiter?.continuation.resume(returning: nil)
     }
 
     public func resolve(_ track: Track) async throws -> ResolvedTrackURL {
@@ -789,8 +819,8 @@ public final class AppEnvironment: ObservableObject {
 
     /// Open a connection to the active server before anything needs one.
     public func prewarmActiveServer() {
-        guard let connection = active?.connection else { return }
-        prewarmStreaming(connection: connection)
+        guard let active else { return }
+        prewarmStreaming(connection: active.connection, backend: active.backend)
     }
 
     /// Put a live connection to `connection`'s host into the pool the audio
@@ -810,8 +840,13 @@ public final class AppEnvironment: ObservableObject {
     /// lookup and a TLS handshake, and activation has already spoken to the same
     /// address, so this raises no permission prompt of its own. Throttled, since
     /// every foreground calls this.
-    private func prewarmStreaming(connection: ServerConnection) {
-        guard connection.baseURL.scheme?.hasPrefix("http") == true else { return }
+    ///
+    /// Not for the offline demo, which has no server: its base URL names a
+    /// host that does not exist, and warming it was a DNS miss on every return
+    /// to the foreground in exactly the configuration meant to need no network.
+    private func prewarmStreaming(connection: ServerConnection, backend: any MusicBackend) {
+        guard !(backend is DemoBackend),
+              connection.baseURL.scheme?.hasPrefix("http") == true else { return }
         if let last = lastPrewarm, last.serverId == connection.id,
            Date().timeIntervalSince(last.at) < 30 { return }
         lastPrewarm = (connection.id, Date())
@@ -833,7 +868,7 @@ public final class AppEnvironment: ObservableObject {
         // Anything that was tapped during launch and is waiting on a stream
         // proceeds now, against the confirmed backend.
         pendingStreaming.setDelegate(streaming)
-        prewarmStreaming(connection: connection)
+        prewarmStreaming(connection: connection, backend: backend)
         // End any station only on an actual server SWITCH — not on same-server
         // rebuilds (Sync Now / library-selection changes also route through here),
         // which must not kill a live station's auto-extend. `active` still holds
