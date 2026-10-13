@@ -9,6 +9,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Mozz.Desktop.Audio;
 using Mozz.Desktop.Audio.Platform;
+using Mozz.Desktop.Audio.Streaming;
 using System.Windows.Input;
 using Mozz.Desktop.Controls;
 using Mozz.Desktop.Core;
@@ -177,16 +178,30 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
     [ObservableProperty] private bool _isPlaying;
 
     /// <summary>
-    /// Asked to play and not yet making sound — resolving the source (which can
-    /// spawn ffprobe or call the core) and then filling the engine's buffer. On a
-    /// cold start that is seconds, and the transport used to show nothing during
-    /// it, then a pause glyph over silence. The transport shows a spinner
-    /// instead, as the phones do. Cleared the moment the playhead moves.
+    /// A play has gone unheard long enough to show — resolving the source (which can spawn
+    /// ffprobe or call the core), or the engine opening and filling its buffer. On a cold start
+    /// that is seconds, and the transport used to show nothing, then a pause glyph over silence.
+    /// It shows a spinner instead, as the phones do.
     /// </summary>
     [ObservableProperty] private bool _isBuffering;
 
-    /// <summary>Where the playhead stood when play was asked for; null once audio flows.</summary>
-    private double? _awaitingAudioFrom;
+    /// <summary>
+    /// When the play still waiting to be heard was asked for; null when nothing is waiting.
+    /// Whether it has been heard is the engine's to say (<see cref="IAudioEngine.IsWaitingForAudio"/>),
+    /// not something inferred here from the playhead — that inference had already drifted from the
+    /// phones' copy of it and could leave a spinner up over audible music.
+    /// </summary>
+    private DateTime? _playRequestedAt;
+
+    /// <summary>The source for the requested play is still being resolved; the engine has nothing yet.</summary>
+    private bool _resolvingSource;
+
+    /// <summary>
+    /// How long a play may go unheard before the transport shows a spinner. A resume is heard
+    /// within milliseconds, and a spinner for those would flicker on every press of play; until
+    /// then the pause glyph says the press was taken. The same grace as the phones.
+    /// </summary>
+    private static readonly TimeSpan BufferingGrace = TimeSpan.FromMilliseconds(300);
 
     // Transport surface bound by the player bar.
     [ObservableProperty] private double _positionSeconds;
@@ -241,8 +256,43 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
     public string PlayPauseGlyph => IsPlaying ? "\u23F8" : "\u23F5";
 
     /// <summary>The transport shows exactly one of play, pause or a spinner.</summary>
-    public bool ShowsPlayGlyph => !IsPlaying && !IsBuffering;
-    public bool ShowsPauseGlyph => IsPlaying && !IsBuffering;
+    public bool ShowsPlayGlyph => !ShowsPauseGlyph && !IsBuffering;
+    public bool ShowsPauseGlyph => (IsPlaying || _playRequestedAt is not null) && !IsBuffering;
+
+    /// <summary>A play has been asked for; keep the existing start if one is already waiting.</summary>
+    private void BeginAwaitingAudio()
+    {
+        _playRequestedAt ??= DateTime.UtcNow;
+        OnPropertyChanged(nameof(ShowsPlayGlyph));
+        OnPropertyChanged(nameof(ShowsPauseGlyph));
+        UpdateBuffering();
+    }
+
+    /// <summary>Nothing is waiting any more: heard, paused, stopped, or failed.</summary>
+    private void EndAwaitingAudio()
+    {
+        _playRequestedAt = null;
+        _resolvingSource = false;
+        IsBuffering = false;
+        OnPropertyChanged(nameof(ShowsPlayGlyph));
+        OnPropertyChanged(nameof(ShowsPauseGlyph));
+    }
+
+    /// <summary>Heard yet? End the wait. Otherwise show a spinner once the grace has passed.</summary>
+    private void UpdateBuffering()
+    {
+        if (_playRequestedAt is not { } since) return;
+        // State first, then the wait: the engine starts waiting before it says Playing, so seeing
+        // Playing guarantees the wait read next is this request's and not an older one.
+        var playing = _engine?.State == PlaybackState.Playing;
+        var waiting = _resolvingSource || (_engine?.IsWaitingForAudio ?? false);
+        if (!waiting && playing)
+        {
+            EndAwaitingAudio();
+            return;
+        }
+        IsBuffering = waiting && DateTime.UtcNow - since >= BufferingGrace;
+    }
 
     partial void OnIsBufferingChanged(bool value)
     {
@@ -997,6 +1047,7 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
             // Before anything can be played: the tracks come from the local
             // database, but their stream URLs come from an attached backend.
             await Connect.AttachSavedAccountsAsync();
+            PrewarmActiveServer();
 
             // Artwork resolves through an attached backend, and tiles start
             // asking as soon as anything renders — which is before this point.
@@ -1139,6 +1190,14 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
         await RefreshSettingsAsync();
     }
 
+    /// <summary>
+    /// Open a connection to the active server before anything needs one. The first account is
+    /// the active one. Called at launch, on switching servers, and whenever the window comes back
+    /// to the front — connections go stale while the app sits idle.
+    /// </summary>
+    public void PrewarmActiveServer()
+        => HttpByteStreamSource.Prewarm(Connect.Accounts.FirstOrDefault()?.BaseUrl);
+
     [RelayCommand]
     private async Task UseServerAsync(ServerAccount? account)
     {
@@ -1154,6 +1213,7 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
         {
             IsSettingsBusy = true;
             await _server.AttachAsync(account);
+            PrewarmActiveServer();
             _artwork.ForgetFailures();
             _lastWrittenContinuityQueueHash = null;
 
@@ -3241,19 +3301,28 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
         switch (_engine.State)
         {
             case PlaybackState.Playing:
+                EndAwaitingAudio();
                 _engine.Pause();
                 _playHistory.PauseCurrent(CurrentPositionSeconds());
                 IsPlaying = false;
                 CheckpointContinuity(ContinuityCheckpointReason.TransportChanged);
                 break;
             case PlaybackState.Paused:
+                EndAwaitingAudio();
                 _engine.Resume();
+                BeginAwaitingAudio();
                 _playHistory.ResumeCurrent(CurrentPositionSeconds());
                 IsPlaying = true;
                 CheckpointContinuity(ContinuityCheckpointReason.TransportChanged);
                 break;
             default:
-                _ = PlayIndexAsync(_queue.CurrentIndex < 0 ? 0 : _queue.CurrentIndex);
+                // The engine has nothing to resume — the stream failed, or the track was stopped.
+                // Start it again where it was, as the phones do, unless it had already finished.
+                var resumeAt = PositionSeconds > 0
+                    && (DurationSeconds <= 0 || PositionSeconds < DurationSeconds - 1)
+                    ? PositionSeconds
+                    : 0;
+                _ = PlayIndexAsync(_queue.CurrentIndex < 0 ? 0 : _queue.CurrentIndex, resumeAt);
                 break;
         }
         _nowPlaying_os?.UpdateState(_engine.State);
@@ -3364,15 +3433,15 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
         RefreshQueueRows();
 
         // Say the tap landed before the slow part, not after it.
-        IsBuffering = true;
-        _awaitingAudioFrom = null;
+        _resolvingSource = true;
+        BeginAwaitingAudio();
 
         // Resolving a source can spawn ffprobe or call the core, so keep it off
         // the UI thread.
         var source = await Task.Run(() => ResolveSource(track));
         if (source is null)
         {
-            IsBuffering = false;
+            EndAwaitingAudio();
             if (skipBudget > 0 && _queue.NextIndex() is { } next && next != index)
                 await PlayIndexAsync(next, skipBudget: skipBudget - 1);
             return;
@@ -3385,9 +3454,11 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
         // wrong song" rather than "it could not play that song".
         if (!_engine.Play(source, track))
         {
-            IsBuffering = false;
+            EndAwaitingAudio();
             return;
         }
+        // The engine has it; from here the engine says when it is heard.
+        _resolvingSource = false;
 
         NowPlaying = track;
         _ = LoadLyricsAsync(track, 0);
@@ -3402,7 +3473,6 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
             SeekHistoryForCurrent(initialPositionSeconds);
         }
         IsPlaying = true;
-        _awaitingAudioFrom = Math.Max(0, initialPositionSeconds);
         CheckpointContinuity(ContinuityCheckpointReason.TrackChanged);
 
         _nowPlaying_os?.UpdateMetadata(new NowPlayingMetadata(
@@ -3436,6 +3506,7 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
             await PlayIndexAsync(next);
         else
         {
+            EndAwaitingAudio();
             _engine?.Stop();
             IsPlaying = false;
             CheckpointContinuity(ContinuityCheckpointReason.TransportChanged);
@@ -3463,6 +3534,7 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
     private void StopPlayback()
     {
         SkipHistoryForCurrent();
+        EndAwaitingAudio();
         _engine?.Stop();
         IsPlaying = false;
         _nowPlaying_os?.UpdateState(PlaybackState.Stopped);
@@ -3495,25 +3567,17 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
         var duration = _engine.Duration.TotalSeconds;
         if (duration > 0) DurationSeconds = duration;
 
-        // Nothing to fight over: the scrubber holds its own value while it is
-        // being dragged and hands back one seek at the end.
-        var pos = _engine.Position.TotalSeconds;
-        PositionSeconds = DurationSeconds > 0 ? Math.Min(pos, DurationSeconds) : pos;
-        _playHistory.ProgressCurrent(PositionSeconds);
+        UpdateBuffering();
 
-        // Sound is coming out once the playhead has moved past where it started.
-        if (_awaitingAudioFrom is { } start && pos > start + 0.05)
+        // Nothing to fight over: the scrubber holds its own value while it is
+        // being dragged and hands back one seek at the end. While a play is
+        // still unheard the playhead cannot have moved, and the engine may not
+        // have applied the start position yet, so the target already shown stands.
+        if (_playRequestedAt is null)
         {
-            _awaitingAudioFrom = null;
-            IsBuffering = false;
-        }
-        // Paused or stopped while still waiting: there is nothing to wait for.
-        // Only once the engine has the track, though — during the resolve the
-        // engine's state still describes the previous song.
-        else if (_awaitingAudioFrom is not null && _engine.State != PlaybackState.Playing)
-        {
-            _awaitingAudioFrom = null;
-            IsBuffering = false;
+            var pos = _engine.Position.TotalSeconds;
+            PositionSeconds = DurationSeconds > 0 ? Math.Min(pos, DurationSeconds) : pos;
+            _playHistory.ProgressCurrent(PositionSeconds);
         }
         UpdateActiveLyric(PositionSeconds);
         CheckpointContinuity(ContinuityCheckpointReason.Periodic);
@@ -4012,13 +4076,19 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable, ITrackMe
         Dispatcher.UIThread.Post(() =>
         {
             CompleteHistoryForCurrent();
+            EndAwaitingAudio();
             IsPlaying = false;
             _nowPlaying_os?.UpdateState(PlaybackState.Stopped);
         });
     }
 
     private void OnEngineError(object? sender, AudioErrorEventArgs e)
-        => Dispatcher.UIThread.Post(() => StatusMessage = e.Message);
+        => Dispatcher.UIThread.Post(() =>
+        {
+            // A play that failed is not going to be heard; stop showing that it is on its way.
+            EndAwaitingAudio();
+            StatusMessage = e.Message;
+        });
 
     private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     { ".wav", ".flac", ".mp3", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".alac", ".aif", ".aiff", ".wma" };

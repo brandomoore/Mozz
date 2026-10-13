@@ -25,6 +25,57 @@ public sealed class HttpByteStreamSource : ByteStreamSource
     private static readonly HttpClient SharedClient =
         new() { Timeout = Timeout.InfiniteTimeSpan };
 
+    private static readonly object PrewarmLock = new();
+    private static readonly Dictionary<string, DateTime> LastPrewarm = new();
+
+    /// <summary>
+    /// Open a connection to <paramref name="baseUrl"/>'s host in the pool every stream reads
+    /// through, before the first stream needs one — so the first chunk of the first song after
+    /// launch, or after the app has sat idle, does not also pay for DNS, TCP and TLS. That setup
+    /// is most of what a cold first play waits for, and it has to be this client's pool: a warm
+    /// connection anywhere else would not be reused.
+    /// </summary>
+    /// <remarks>
+    /// A HEAD with no credentials: the answer does not matter (a 401 warms the connection as well
+    /// as a 200), and sending nothing means nothing sensitive goes anywhere. Fire and forget, never
+    /// throws, and at most once every 30 seconds per server. The same rule the phones follow.
+    /// </remarks>
+    public static void Prewarm(string? baseUrl) => _ = Prewarm(baseUrl, SharedClient);
+
+    /// <summary>The same, through <paramref name="client"/>; returns the request in flight, or null when skipped.</summary>
+    internal static Task? Prewarm(string? baseUrl, HttpClient client)
+    {
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return null;
+        }
+        var server = uri.GetLeftPart(UriPartial.Authority);
+        lock (PrewarmLock)
+        {
+            if (LastPrewarm.TryGetValue(server, out var at) && DateTime.UtcNow - at < TimeSpan.FromSeconds(30))
+            {
+                return null;
+            }
+            LastPrewarm[server] = DateTime.UtcNow;
+        }
+        return Task.Run(async () =>
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using var request = new HttpRequestMessage(HttpMethod.Head, uri);
+                using var _ = await client.SendAsync(
+                    request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            }
+            catch
+            {
+                // Warming is an optimisation; a server that does not answer will be
+                // reported by the play that actually needs it.
+            }
+        });
+    }
+
     private readonly HttpClient _client;
     private readonly string _url;
     private readonly IReadOnlyDictionary<string, string> _headers;

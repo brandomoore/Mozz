@@ -26,6 +26,9 @@ public partial class MainWindow : Window
             ObserveLyrics();
         };
         DataContextChanged += (_, _) => ObserveLyrics();
+        // Coming back to the window is the desktop's return to the foreground: connections to the
+        // server may have gone stale while it sat idle, so reopen one before a play needs it.
+        Activated += (_, _) => (DataContext as MainViewModel)?.PrewarmActiveServer();
     }
 
     /// <summary>

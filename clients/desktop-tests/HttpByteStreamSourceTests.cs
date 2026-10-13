@@ -105,6 +105,53 @@ public class HttpByteStreamSourceTests
         return acc.ToArray();
     }
 
+    private sealed class RecordingHandler : HttpMessageHandler
+    {
+        public readonly List<HttpRequestMessage> Requests = new();
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            lock (Requests) Requests.Add(request);
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.Unauthorized));
+        }
+    }
+
+    /// <summary>
+    /// Warming sends one HEAD to the server's address, carrying no credentials, and does not send
+    /// another within the throttle — every return to the window asks for one.
+    /// </summary>
+    [Fact]
+    public async Task Prewarm_SendsOneUnauthenticatedHead_ThenWaits()
+    {
+        var handler = new RecordingHandler();
+        using var client = new HttpClient(handler);
+        var host = $"https://prewarm-{Guid.NewGuid():N}.example:32400";
+
+        var first = HttpByteStreamSource.Prewarm(host, client);
+        Assert.NotNull(first);
+        await first!;
+        Assert.Null(HttpByteStreamSource.Prewarm(host + "/library", client));
+
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Head, request.Method);
+        Assert.Equal(new Uri(host), request.RequestUri);
+        Assert.Null(request.Headers.Authorization);
+        Assert.Empty(request.Headers.Where(h => h.Key.StartsWith("X-Plex", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    /// <summary>Nothing to warm for an address that is not a web server — the offline demo's, say.</summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("file:///music")]
+    [InlineData("not a url")]
+    public void Prewarm_IgnoresAnythingThatIsNotHttp(string? address)
+    {
+        var handler = new RecordingHandler();
+        using var client = new HttpClient(handler);
+        Assert.Null(HttpByteStreamSource.Prewarm(address, client));
+        Assert.Empty(handler.Requests);
+    }
+
     [Fact]
     public void HonoursRange_ReadsTheWholeStreamInOrder()
     {
