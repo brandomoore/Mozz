@@ -221,6 +221,16 @@ public struct PlexLocalDiscovery: PlexLocallyDiscovering {
         // often enough to re-probe and to notice its own deadline.
         var tv = timeval(tv_sec: 0, tv_usec: 250_000)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        // And a short SEND timeout. A UDP `sendto` is assumed never to block,
+        // and does: when the local network is not yet permitted, or an
+        // interface's queue is full, it can sit there indefinitely. One such
+        // send held a discovery — and the synchronous core call waiting on it —
+        // for six days in a test run, with nothing above it able to give up,
+        // and the desktop's "find servers" calls the same path. Bounded here,
+        // a stuck send fails after a tenth of a second and the sweep moves on
+        // under its own deadline.
+        var sendLimit = timeval(tv_sec: 0, tv_usec: 100_000)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sendLimit, socklen_t(MemoryLayout<timeval>.size))
 
         var local = sockaddr_in()
         local.sin_family = sa_family_t(AF_INET)

@@ -665,13 +665,19 @@ private func discoverServers(
     let wanted = request.kind.flatMap(BackendKind.init(rawValue:))
 
     // This command must never outlive its own budget, and the probes cannot be
-    // relied on to enforce it: both sweep a subnet with a blocking socket, and
-    // a `sendto` to an unroutable broadcast address can sit there. That is not
-    // a test-only concern — `mozz_session_call` is synchronous, so a sweep that
-    // overruns holds the calling thread, and a client would be looking at a
-    // frozen sign-in screen rather than a slow one. Racing the whole thing
-    // against the deadline bounds it whatever the sockets do; a probe still
-    // running is abandoned, having only ever written to a local buffer.
+    // relied on to enforce it: both sweep a subnet with a socket, and a
+    // `sendto` can sit there. That is not a test-only concern —
+    // `mozz_session_call` is synchronous, so a sweep that overruns holds the
+    // calling thread, and a client would be looking at a frozen sign-in screen
+    // rather than a slow one.
+    //
+    // Each probe is bounded on its own with `withDeadline`, which returns at
+    // the deadline without waiting for the probe. The previous version raced
+    // the probes against a sleep in a task group, which reads the same and is
+    // not: a task group cannot return until every child has finished, so a
+    // probe stuck in `sendto` held it open — for six days, in one test run.
+    // Separately, so that a Plex sweep that overruns does not take the
+    // Jellyfin servers already found down with it.
 
     let probePlex: @Sendable () async -> [WireDiscoveredServer] = {
         guard wanted == nil || wanted == .plex else { return [] }
@@ -700,22 +706,12 @@ private func discoverServers(
     // Subsonic has no discovery protocol of its own — there is nothing to ask —
     // so a Subsonic-only request correctly comes back empty rather than sweeping
     // the network for something that cannot answer.
-    let servers = await withTaskGroup(of: [WireDiscoveredServer]?.self) { group in
-        group.addTask {
-            async let plex = probePlex()
-            async let jellyfin = probeJellyfin()
-            return await plex + jellyfin
-        }
-        group.addTask {
-            // A slice of grace over the probes' own deadline, so a sweep that
-            // finishes normally is never cut off by a rounding difference.
-            try? await Task.sleep(nanoseconds: UInt64((timeout + 1) * 1_000_000_000))
-            return nil
-        }
-        let first = await group.next() ?? nil
-        group.cancelAll()
-        return first ?? []
-    }
+    // A slice of grace over the probes' own deadline, so a sweep that finishes
+    // normally is never cut off by a rounding difference.
+    let budget = timeout + 1
+    async let plex = withDeadline(seconds: budget, fallback: [], probePlex)
+    async let jellyfin = withDeadline(seconds: budget, fallback: [], probeJellyfin)
+    let servers = await plex + jellyfin
     return session.success(request, servers)
 }
 

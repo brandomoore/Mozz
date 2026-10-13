@@ -170,6 +170,16 @@ public final class JellyfinServerDiscovery: JellyfinDiscovering, @unchecked Send
         // Short receive timeout so the loop can re-probe and notice cancellation.
         var tv = timeval(tv_sec: 0, tv_usec: 250_000)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        // And a short SEND timeout. A UDP `sendto` is assumed never to block,
+        // and does: when the local network is not yet permitted, or an
+        // interface's queue is full, it can sit there indefinitely. One such
+        // send held a discovery — and the synchronous core call waiting on it —
+        // for six days in a test run, with nothing above it able to give up,
+        // and the desktop's "find servers" calls the same path. Bounded here,
+        // a stuck send fails after a tenth of a second and the sweep moves on
+        // under its own deadline.
+        var sendLimit = timeval(tv_sec: 0, tv_usec: 100_000)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sendLimit, socklen_t(MemoryLayout<timeval>.size))
 
         // Bind an ephemeral local port so replies have somewhere to land.
         var local = sockaddr_in()
@@ -186,8 +196,14 @@ public final class JellyfinServerDiscovery: JellyfinDiscovering, @unchecked Send
         let probe = Array(JellyfinDiscoveryParser.probeMessage.utf8)
         log.info("Discovery probing \(targets.count) target(s)")
 
+        let deadline = Date().addingTimeInterval(timeout)
+
         func sendProbes() {
             for target in targets {
+                // The deadline and cancellation govern sending as well as
+                // waiting, as they do in the Plex sweep: a sweep is up to a
+                // thousand datagrams, and even bounded sends add up.
+                if Date() >= deadline || cancelled.isSet { return }
                 var dst = sockaddr_in()
                 dst.sin_family = sa_family_t(AF_INET)
                 dst.sin_port = JellyfinDiscoveryParser.discoveryPort.bigEndian
@@ -204,7 +220,6 @@ public final class JellyfinServerDiscovery: JellyfinDiscovering, @unchecked Send
         }
 
         var seen = Set<String>()
-        let deadline = Date().addingTimeInterval(timeout)
         var lastProbe = Date()
         sendProbes()
 
