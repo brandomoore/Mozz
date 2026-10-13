@@ -66,8 +66,12 @@ pub extern "system" fn Java_com_thatcube_mozz_playback_MozzDsp_nativeFree(
     drop(unsafe { Box::from_raw(handle as *mut Dsp) });
 }
 
+/// # Safety
+/// Called only by the JVM: `handle` must be zero or a live handle from
+/// `nativeNew`, and `gains_db` must be a valid local reference to a Java
+/// `double[]` for the duration of the call.
 #[no_mangle]
-pub extern "system" fn Java_com_thatcube_mozz_playback_MozzDsp_nativeSetEqualizer(
+pub unsafe extern "system" fn Java_com_thatcube_mozz_playback_MozzDsp_nativeSetEqualizer(
     env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -128,8 +132,13 @@ pub extern "system" fn Java_com_thatcube_mozz_playback_MozzDsp_nativeSetGainDb(
 /// Returns false when nothing was done, which the caller treats as "pass the
 /// buffer through" rather than as an error: an equaliser that cannot run should
 /// leave the music playing.
+///
+/// # Safety
+/// Called only by the JVM: `handle` must be zero or a live handle from
+/// `nativeNew`, and `pcm` must be a valid local reference to a Java `byte[]` of
+/// at least `length` bytes for the duration of the call.
 #[no_mangle]
-pub extern "system" fn Java_com_thatcube_mozz_playback_MozzDsp_nativeProcess(
+pub unsafe extern "system" fn Java_com_thatcube_mozz_playback_MozzDsp_nativeProcess(
     env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -143,7 +152,7 @@ pub extern "system" fn Java_com_thatcube_mozz_playback_MozzDsp_nativeProcess(
         return JNI_TRUE;
     }
     let samples = (length as usize) / 2;
-    if samples == 0 || samples % dsp.channels != 0 {
+    if samples == 0 || !samples.is_multiple_of(dsp.channels) {
         // A partial frame would mean guessing the missing channels, which is a
         // decision this layer has no business making.
         return JNI_FALSE;
@@ -158,10 +167,11 @@ pub extern "system" fn Java_com_thatcube_mozz_playback_MozzDsp_nativeProcess(
 
     dsp.scratch.clear();
     dsp.scratch.reserve(samples);
-    for frame in bytes.chunks_exact(2) {
+    let (frames, _) = bytes.as_chunks::<2>();
+    for &[low, high] in frames {
         // Little-endian, which is what ExoPlayer hands over and what every
         // Android device this runs on uses.
-        let value = i16::from_le_bytes([frame[0] as u8, frame[1] as u8]);
+        let value = i16::from_le_bytes([low as u8, high as u8]);
         dsp.scratch.push(f32::from(value) / SCALE);
     }
 

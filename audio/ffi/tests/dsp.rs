@@ -42,7 +42,10 @@ fn a_boosted_band_changes_the_signal() {
     let original = samples.clone();
     assert!(unsafe { mozz_dsp_process(dsp, samples.as_mut_ptr(), 256) });
 
-    assert_ne!(samples, original, "an enabled band that does nothing is a dead control");
+    assert_ne!(
+        samples, original,
+        "an enabled band that does nothing is a dead control"
+    );
     unsafe { mozz_dsp_free(dsp) };
 }
 
@@ -52,7 +55,11 @@ fn levelling_attenuates_and_never_boosts() {
     assert!(unsafe { mozz_dsp_set_gain_db(dsp, -6.0) });
     let mut quiet = vec![1.0f32; 8];
     assert!(unsafe { mozz_dsp_process(dsp, quiet.as_mut_ptr(), 8) });
-    assert!(quiet[0] < 0.51 && quiet[0] > 0.49, "-6 dB is about half: {}", quiet[0]);
+    assert!(
+        quiet[0] < 0.51 && quiet[0] > 0.49,
+        "-6 dB is about half: {}",
+        quiet[0]
+    );
 
     // A positive gain asks for headroom that is not there. Clipping is a worse
     // answer than not boosting, so unity is the ceiling.
