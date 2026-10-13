@@ -148,7 +148,17 @@ pub struct Engine {
     /// tracks rather than being reset with the decoder.
     volume: Volume,
     ring: Producer,
+    /// The device's channel count: what the ring holds and the speaker plays.
+    /// Fixed for the engine's life — every track is converted to it.
     channels: usize,
+    /// The current track's own channel count, before conversion.
+    ///
+    /// This used to overwrite `channels`. A mono track on a stereo device then
+    /// wrote mono samples into a stereo ring and counted them as stereo frames,
+    /// and the two never agreed again: the track stalled after its first packet
+    /// or never started. Every mono recording failed that way on the phone and
+    /// the desktop, both of which open the device in stereo.
+    source_channels: usize,
     /// The identifier reported at the boundary when this track starts playing.
     pending_track: Option<u64>,
     /// How far into the pending track a seek landed before its boundary was
@@ -198,6 +208,7 @@ impl Engine {
             volume: Volume::new(),
             ring,
             channels,
+            source_channels: channels,
             pending_track: None,
             pending_offset: 0,
             carry: Vec::new(),
@@ -283,14 +294,14 @@ impl Engine {
     /// the audio does not jump, so moving a slider mid-track is a change in
     /// tone rather than a click.
     pub fn set_equalizer(&mut self, profile: &EqualizerProfile, enabled: bool) {
-        let sample_rate = self
-            .decoder
-            .as_ref()
-            .map(|d| d.spec().sample_rate as f64)
-            .unwrap_or(44_100.0);
         self.profile = profile.clone();
         self.equalizer_enabled = enabled;
-        self.equalizer = Equalizer::from_profile(sample_rate, self.channels, profile, enabled);
+        // At the DEVICE rate. The equaliser runs after the resampler, so the
+        // audio it sees is at the device's rate whatever the file's was. This
+        // used the file's rate, which put every band of a 44.1 kHz track on a
+        // 48 kHz phone about 8% away from the frequency on its slider.
+        self.equalizer =
+            Equalizer::from_profile(self.device_rate as f64, self.channels, profile, enabled);
     }
 
     /// Replace the ReplayGain settings.
@@ -410,24 +421,29 @@ impl Engine {
         };
 
         self.carry.clear();
+        let source = self.source_channels.max(1);
+        let device = self.channels.max(1);
+        // Resample, then convert to the device's channels, before anything else
+        // — so every stage after this (gain, tone, volume) works at one rate and
+        // one layout that never change.
         if let Some(resampler) = self.resampler.as_mut() {
-            // Resample before anything else, so every stage after this - gain,
-            // tone, volume - works at one rate that never changes.
-            let frames = decoded.len() / self.channels.max(1);
-            self.resampled.resize(
-                resampler.output_estimate(frames) * self.channels.max(1),
-                0.0,
-            );
+            let frames = decoded.len() / source;
+            self.resampled
+                .resize(resampler.output_estimate(frames) * source, 0.0);
             let produced = resampler.process(decoded, &mut self.resampled);
-            self.carry
-                .extend_from_slice(&self.resampled[..produced * self.channels.max(1)]);
+            remix_into(
+                &mut self.carry,
+                &self.resampled[..produced * source],
+                source,
+                device,
+            );
             if self.carry.is_empty() {
                 // The filter has not produced anything yet, which happens only
                 // while it fills. Not the end of anything.
                 return Ok(Pumped::Wrote(0));
             }
         } else {
-            self.carry.extend_from_slice(decoded);
+            remix_into(&mut self.carry, decoded, source, device);
         }
 
         // ReplayGain first, then the equaliser: normalisation describes the
@@ -470,20 +486,11 @@ impl Engine {
     /// the same filter - while the old per-track rebuild moved every centre
     /// frequency whenever a 48 kHz track followed a 44.1 kHz one.
     fn configure_for(&mut self, spec: StreamSpec) {
-        let channels_changed = spec.channels != self.channels;
-        self.channels = spec.channels;
-
+        // The track's layout is the source side only. The ring, the equaliser
+        // and the device keep the device's layout; `remix_into` bridges them.
+        self.source_channels = spec.channels;
         self.resampler = Resampler::new(spec.sample_rate, self.device_rate, spec.channels);
         self.resampled.clear();
-
-        if channels_changed {
-            self.equalizer = Equalizer::from_profile(
-                self.device_rate as f64,
-                spec.channels,
-                &self.profile,
-                self.equalizer_enabled,
-            );
-        }
     }
 }
 
@@ -513,6 +520,52 @@ pub fn drain(consumer: &mut Consumer, channels: usize) -> Vec<f32> {
             return all;
         }
         all.extend_from_slice(&block[..outcome.frames * channels]);
+    }
+}
+
+/// Append `input`, interleaved with `from` channels, to `out` as `to` channels.
+///
+/// Mono is copied to every output channel, so a mono recording sits in the
+/// middle rather than in one ear. Anything wider than the output is folded
+/// down rather than truncated: 5.1 uses the standard downmix (centre and
+/// surrounds at -3 dB into each side, LFE dropped, scaled so a full-scale
+/// mix cannot clip), and any other layout averages each output channel's
+/// share of the inputs. A narrower-than-output layout fills the first
+/// channels and leaves the rest silent.
+fn remix_into(out: &mut Vec<f32>, input: &[f32], from: usize, to: usize) {
+    if from == to {
+        out.extend_from_slice(input);
+        return;
+    }
+    let frames = input.len() / from;
+    out.reserve(frames * to);
+    for frame in input.chunks_exact(from) {
+        match (from, to) {
+            (1, _) => out.extend(std::iter::repeat_n(frame[0], to)),
+            (_, 1) => out.push(frame.iter().sum::<f32>() / from as f32),
+            // FL FR FC LFE SL SR, the order symphonia reports 5.1 in.
+            (6, 2) => {
+                const SIDE: f32 = std::f32::consts::FRAC_1_SQRT_2;
+                const SCALE: f32 = 1.0 / (1.0 + 2.0 * SIDE);
+                let centre = frame[2] * SIDE;
+                out.push((frame[0] + centre + frame[4] * SIDE) * SCALE);
+                out.push((frame[1] + centre + frame[5] * SIDE) * SCALE);
+            }
+            _ if from > to => {
+                for channel in 0..to {
+                    let (sum, count) = frame
+                        .iter()
+                        .skip(channel)
+                        .step_by(to)
+                        .fold((0.0f32, 0u32), |(sum, count), &s| (sum + s, count + 1));
+                    out.push(sum / count.max(1) as f32);
+                }
+            }
+            _ => {
+                out.extend_from_slice(frame);
+                out.extend(std::iter::repeat_n(0.0, to - from));
+            }
+        }
     }
 }
 
@@ -610,6 +663,57 @@ mod tests {
             landed as i64,
             "position must count from the seek target, not from zero"
         );
+    }
+
+    /// Mono is copied to both sides, so it sits in the middle rather than in
+    /// one ear, and every frame arrives — the ring is counted in the device's
+    /// channels, not the track's.
+    #[test]
+    fn a_mono_track_is_heard_in_both_channels_of_a_stereo_device() {
+        let (tx, mut rx) = ring(4096, 2);
+        let mut engine = Engine::with_device_rate(tx, 2, 8_000);
+        engine.play_now(decoder(&[16_384; 100]), 1, None);
+
+        fill(&mut engine).unwrap();
+        let out = drain(&mut rx, 2);
+
+        assert_eq!(out.len(), 200, "100 mono frames are 100 stereo frames");
+        for &[left, right] in out.as_chunks::<2>().0 {
+            assert_eq!(left, right, "left and right should match");
+            assert!((left - 0.5).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn stereo_folds_to_mono_by_averaging() {
+        let mut out = Vec::new();
+        remix_into(&mut out, &[1.0, 0.0, 0.5, 0.5], 2, 1);
+        assert_eq!(out, vec![0.5, 0.5]);
+    }
+
+    /// 5.1 keeps its centre in both sides, drops the LFE, and cannot clip.
+    #[test]
+    fn five_one_downmixes_to_stereo_without_clipping() {
+        let mut out = Vec::new();
+        // FL FR FC LFE SL SR, every channel at full scale.
+        remix_into(&mut out, &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0], 6, 2);
+        assert_eq!(out.len(), 2);
+        assert!(
+            out.iter().all(|s| (s - 1.0).abs() < 1e-6),
+            "full scale in, full scale out: {out:?}"
+        );
+
+        let mut centre_only = Vec::new();
+        remix_into(&mut centre_only, &[0.0, 0.0, 1.0, 0.0, 0.0, 0.0], 6, 2);
+        assert_eq!(
+            centre_only[0], centre_only[1],
+            "the centre belongs to both sides"
+        );
+        assert!(centre_only[0] > 0.0);
+
+        let mut lfe_only = Vec::new();
+        remix_into(&mut lfe_only, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0], 6, 2);
+        assert_eq!(lfe_only, vec![0.0, 0.0]);
     }
 
     #[test]
