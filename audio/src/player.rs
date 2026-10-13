@@ -191,6 +191,53 @@ struct Observable {
     /// what has been heard puts that imagined origin before the ring started,
     /// which is negative and perfectly meaningful.
     track_start_frame: AtomicI64,
+    /// Asked to play, and the device has not yet been given any of it.
+    ///
+    /// Set by a play, a resume, or a seek while playing; cleared by the audio
+    /// callback the first time it takes real frames of what was asked for.
+    /// `state` cannot answer this: it says Playing the instant a track is
+    /// accepted, which on a cold network is seconds before anything is heard,
+    /// and a shell that read it as "sound is coming out" drew a pause button
+    /// over silence. Every shell used to guess instead, from whether the
+    /// position had moved — three guesses in three languages that had already
+    /// drifted apart.
+    waiting_for_audio: AtomicBool,
+    /// The track whose first frames end the wait, or 0 for any real audio.
+    ///
+    /// A play waits for its own track's boundary rather than for any frames,
+    /// because the callback in flight when the track changed can still be
+    /// delivering the previous one.
+    awaited_track: AtomicU64,
+}
+
+impl Observable {
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            state: AtomicU64::new(State::Idle.code()),
+            frames_played: AtomicU64::new(0),
+            current_track: AtomicU64::new(0),
+            sample_rate: AtomicU64::new(sample_rate as u64),
+            failed: AtomicBool::new(false),
+            failure_kind: AtomicU64::new(0),
+            track_start_frame: AtomicI64::new(0),
+            waiting_for_audio: AtomicBool::new(false),
+            awaited_track: AtomicU64::new(0),
+        }
+    }
+
+    /// Begin waiting for `track` to be heard (0: for any audio). A wait already
+    /// in progress for a specific track keeps it — a seek right after a play is
+    /// still waiting for that play.
+    fn await_audio(&self, track: u64) {
+        if track != 0 || !self.waiting_for_audio.load(Ordering::Acquire) {
+            self.awaited_track.store(track, Ordering::Release);
+        }
+        self.waiting_for_audio.store(true, Ordering::Release);
+    }
+
+    fn stop_waiting(&self) {
+        self.waiting_for_audio.store(false, Ordering::Release);
+    }
 }
 
 impl crate::sink::PlaybackObserver for Observable {
@@ -202,7 +249,7 @@ impl crate::sink::PlaybackObserver for Observable {
     /// audio callback.
     fn observe(&self, outcome: crate::ring::ReadOutcome) {
         if let Some(boundary) = outcome.boundary {
-            self.current_track.store(boundary.track, Ordering::Relaxed);
+            self.current_track.store(boundary.track, Ordering::Release);
             // `origin`, not `frame`: a track sought before it began counts its
             // position from the seek target, not from where its audio began.
             self.track_start_frame
@@ -211,6 +258,17 @@ impl crate::sink::PlaybackObserver for Observable {
         let start = self.track_start_frame.load(Ordering::Relaxed);
         let played = (outcome.end_frame as i64 - start).max(0) as u64;
         self.frames_played.store(played, Ordering::Relaxed);
+
+        if outcome.frames > 0 && self.waiting_for_audio.load(Ordering::Acquire) {
+            let awaited = self.awaited_track.load(Ordering::Acquire);
+            let heard = match awaited {
+                0 => true,
+                track => outcome.boundary.is_some_and(|b| b.track == track),
+            };
+            if heard {
+                self.stop_waiting();
+            }
+        }
     }
 }
 
@@ -235,15 +293,7 @@ impl Player {
         let sample_rate = crate::sink::preferred_rate(channels).unwrap_or(sample_rate);
 
         let (producer, consumer) = ring(capacity_frames, channels as usize);
-        let observable = Arc::new(Observable {
-            state: AtomicU64::new(State::Idle.code()),
-            frames_played: AtomicU64::new(0),
-            current_track: AtomicU64::new(0),
-            sample_rate: AtomicU64::new(sample_rate as u64),
-            failed: AtomicBool::new(false),
-            failure_kind: AtomicU64::new(0),
-            track_start_frame: AtomicI64::new(0),
-        });
+        let observable = Arc::new(Observable::new(sample_rate));
 
         let (tx, rx) = std::sync::mpsc::channel();
         let engine = Engine::with_device_rate(producer, channels as usize, sample_rate);
@@ -339,7 +389,7 @@ impl Player {
 
     /// What the player is doing.
     pub fn state(&self) -> State {
-        State::from_code(self.observable.state.load(Ordering::Relaxed))
+        State::from_code(self.observable.state.load(Ordering::Acquire))
     }
 
     /// Seconds of the current track that have actually reached the device.
@@ -361,7 +411,15 @@ impl Player {
     /// The track the audio is currently in, which is not necessarily the last
     /// one queued.
     pub fn current_track(&self) -> u64 {
-        self.observable.current_track.load(Ordering::Relaxed)
+        self.observable.current_track.load(Ordering::Acquire)
+    }
+
+    /// True between asking for sound and the device receiving any of it.
+    ///
+    /// The difference between "playing" and "audible": a shell shows a
+    /// spinner rather than a pause button while this holds.
+    pub fn is_waiting_for_audio(&self) -> bool {
+        self.observable.waiting_for_audio.load(Ordering::Acquire)
     }
 
     /// True when a decode failed since the last command.
@@ -477,9 +535,10 @@ fn run(
             Ok(Pumped::Idle) => {
                 if draining && engine.queued_frames() == 0 {
                     draining = false;
+                    observable.stop_waiting();
                     observable
                         .state
-                        .store(State::Ended.code(), Ordering::Relaxed);
+                        .store(State::Ended.code(), Ordering::Release);
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -488,13 +547,7 @@ fn run(
                 // next command must still be heard, and a shell needs to be
                 // able to say what went wrong.
                 draining = false;
-                observable
-                    .failure_kind
-                    .store(FailureKind::of(&error).code(), Ordering::Relaxed);
-                observable.failed.store(true, Ordering::Relaxed);
-                observable
-                    .state
-                    .store(State::Ended.code(), Ordering::Relaxed);
+                fail(&observable, error);
                 engine.stop();
             }
         }
@@ -519,11 +572,12 @@ fn apply(
             match AudioDecoder::open(SourceBox(source), extension.as_deref()) {
                 Ok(decoder) => {
                     engine.play_now(decoder, track, gain_db);
+                    observable.await_audio(track);
                     observable.frames_played.store(0, Ordering::Relaxed);
-                    observable.current_track.store(track, Ordering::Relaxed);
+                    observable.current_track.store(track, Ordering::Release);
                     observable
                         .state
-                        .store(State::Playing.code(), Ordering::Relaxed);
+                        .store(State::Playing.code(), Ordering::Release);
                     if let Some(sink) = sink {
                         let _ = sink.resume();
                     }
@@ -549,7 +603,7 @@ fn apply(
                 engine.play_next(decoder, track, gain_db);
                 observable
                     .state
-                    .store(State::Playing.code(), Ordering::Relaxed);
+                    .store(State::Playing.code(), Ordering::Release);
             }
             // Deliberately not stop(): this is a track queued ahead, and a
             // preload that cannot open is no reason to cut short the one being
@@ -557,22 +611,25 @@ fn apply(
             Err(error) => fail(observable, error),
         },
         Command::Pause => {
+            observable.stop_waiting();
             if let Some(sink) = sink {
                 let _ = sink.pause();
             }
             observable
                 .state
-                .store(State::Paused.code(), Ordering::Relaxed);
+                .store(State::Paused.code(), Ordering::Release);
         }
         Command::Resume => {
+            observable.await_audio(0);
             if let Some(sink) = sink {
                 let _ = sink.resume();
             }
             observable
                 .state
-                .store(State::Playing.code(), Ordering::Relaxed);
+                .store(State::Playing.code(), Ordering::Release);
         }
         Command::Stop => {
+            observable.stop_waiting();
             engine.stop();
             if let Some(sink) = sink {
                 let _ = sink.pause();
@@ -580,9 +637,14 @@ fn apply(
             observable.frames_played.store(0, Ordering::Relaxed);
             observable
                 .state
-                .store(State::Idle.code(), Ordering::Relaxed);
+                .store(State::Idle.code(), Ordering::Release);
         }
         Command::Seek(seconds) => {
+            // A seek empties the ring, so a playing track is silent until it
+            // refills — on a slow stream, audibly so.
+            if State::from_code(observable.state.load(Ordering::Relaxed)) == State::Playing {
+                observable.await_audio(0);
+            }
             if let Ok(landed) = engine.seek(seconds) {
                 // Move the origin, not the position. `observe` recomputes
                 // frames_played from track_start_frame on every read, so a
@@ -608,13 +670,16 @@ fn apply(
 }
 
 fn fail(observable: &Observable, error: DecodeError) {
+    // Nothing is coming; a shell waiting for it should hear about the failure,
+    // not keep waiting.
+    observable.stop_waiting();
     observable
         .failure_kind
         .store(FailureKind::of(&error).code(), Ordering::Relaxed);
     observable.failed.store(true, Ordering::Relaxed);
     observable
         .state
-        .store(State::Ended.code(), Ordering::Relaxed);
+        .store(State::Ended.code(), Ordering::Release);
 }
 
 /// Where finished audio goes.
@@ -742,6 +807,111 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         false
+    }
+
+    fn read(frames: usize, boundary: Option<(u64, u64)>) -> crate::ring::ReadOutcome {
+        crate::ring::ReadOutcome {
+            frames,
+            boundary: boundary.map(|(frame, track)| crate::ring::Boundary {
+                frame,
+                track,
+                origin: frame as i64,
+            }),
+            end_frame: frames as u64,
+            ..Default::default()
+        }
+    }
+
+    /// The first real frames of the requested track end the wait.
+    #[test]
+    fn a_play_stops_waiting_when_its_own_track_is_heard() {
+        let o = Observable::new(8_000);
+        o.await_audio(7);
+        o.observe(read(64, Some((0, 7))));
+        assert!(!o.waiting_for_audio.load(Ordering::Acquire));
+    }
+
+    /// Frames still in flight from the previous track are not the new one.
+    /// The callback running when the track changed can deliver them after the
+    /// change, and ending the wait on them would show "playing" over silence.
+    #[test]
+    fn audio_from_the_previous_track_does_not_end_a_new_plays_wait() {
+        let o = Observable::new(8_000);
+        o.await_audio(7);
+        o.observe(read(64, None));
+        assert!(
+            o.waiting_for_audio.load(Ordering::Acquire),
+            "old audio ended the wait"
+        );
+        o.observe(read(64, Some((64, 6))));
+        assert!(
+            o.waiting_for_audio.load(Ordering::Acquire),
+            "another track's boundary ended it"
+        );
+    }
+
+    /// An empty read is silence, not sound.
+    #[test]
+    fn silence_does_not_end_a_wait() {
+        let o = Observable::new(8_000);
+        o.await_audio(0);
+        o.observe(read(0, None));
+        assert!(o.waiting_for_audio.load(Ordering::Acquire));
+        o.observe(read(32, None));
+        assert!(!o.waiting_for_audio.load(Ordering::Acquire));
+    }
+
+    /// A seek straight after a play is still waiting for that play's track —
+    /// which is how a restored session resumes at its saved position.
+    #[test]
+    fn a_seek_during_a_plays_wait_keeps_waiting_for_that_track() {
+        let o = Observable::new(8_000);
+        o.await_audio(7);
+        o.await_audio(0);
+        o.observe(read(64, None));
+        assert!(o.waiting_for_audio.load(Ordering::Acquire));
+        o.observe(read(64, Some((64, 7))));
+        assert!(!o.waiting_for_audio.load(Ordering::Acquire));
+    }
+
+    /// End to end through the decode thread: a play waits, then is heard;
+    /// a pause stops waiting; a resume waits again until the audio returns.
+    #[test]
+    fn a_player_reports_when_its_audio_is_actually_heard() {
+        let player = Player::new(8_000, 1, 8192).expect("should start");
+        player.play_now(source(&[8_000; 16_000]), Some("wav".into()), 3, None);
+        assert!(
+            eventually(|| player.state() == State::Playing && !player.is_waiting_for_audio()),
+            "a playing track never reported being heard"
+        );
+
+        player.pause();
+        assert!(eventually(|| player.state() == State::Paused));
+        assert!(
+            !player.is_waiting_for_audio(),
+            "a paused player is not waiting"
+        );
+
+        player.resume();
+        assert!(
+            eventually(|| player.state() == State::Playing && !player.is_waiting_for_audio()),
+            "a resumed track never reported being heard"
+        );
+    }
+
+    /// A mono track on a stereo player plays. Both apps open the device in
+    /// stereo, and a mono track used to stall there after its first packet —
+    /// or never start — because the engine took the track's channel count as
+    /// the ring's.
+    #[test]
+    fn a_mono_track_plays_through_a_stereo_player() {
+        let player = Player::new(8_000, 2, 8192).expect("should start");
+        player.play_now(source(&[8_000; 16_000]), Some("wav".into()), 1, None);
+        assert!(
+            eventually(|| player.position_seconds() > 0.5),
+            "a mono track did not advance on a stereo player (stuck at {:.3}s)",
+            player.position_seconds()
+        );
     }
 
     #[test]

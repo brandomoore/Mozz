@@ -194,6 +194,18 @@ public final class AudioEngine {
         return mozz_player_has_failed(handle)
     }
 
+    /// True between asking for sound — `playNow`, `resume`, a seek while
+    /// playing — and the device receiving any of it.
+    ///
+    /// `state` is `.playing` the moment a track is accepted, which on a slow
+    /// network is seconds before anything is heard. This is what says audio is
+    /// actually coming out, answered by the engine from the frames the device
+    /// takes rather than inferred from whether the position moved.
+    public var isWaitingForAudio: Bool {
+        guard let handle else { return false }
+        return mozz_player_is_waiting_for_audio(handle)
+    }
+
     /// Why the last decode failed (``FailureKind/none`` when it hasn't).
     public var failureKind: FailureKind {
         guard let handle else { return .none }

@@ -223,6 +223,20 @@ double mozz_player_position_seconds(const struct MozzPlayer *player);
 uint64_t mozz_player_current_track(const struct MozzPlayer *player);
 
 /**
+ * True between asking for sound — a play, a resume, a seek while playing —
+ * and the device receiving any of it.
+ *
+ * This, not `mozz_player_state`, is what says audio is coming out: the state
+ * is Playing the instant a track is accepted, seconds before anything is
+ * heard on a slow network. A shell shows a spinner while this holds. A null
+ * player is never waiting.
+ *
+ * # Safety
+ * `player` must be a live handle or null.
+ */
+bool mozz_player_is_waiting_for_audio(const struct MozzPlayer *player);
+
+/**
  * True when a decode has failed since the last command.
  *
  * # Safety

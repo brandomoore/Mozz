@@ -189,12 +189,8 @@ pub unsafe extern "C" fn mozz_dsp_set_equalizer(
     let mut gains = [0.0f64; ISO_CENTRES_HZ.len()];
     gains.copy_from_slice(slice);
     let profile = EqualizerProfile::from_gains(gains, preamp_db);
-    dsp.equalizer = Equalizer::from_profile(
-        f64::from(sample_rate),
-        dsp.channels,
-        &profile,
-        enabled,
-    );
+    dsp.equalizer =
+        Equalizer::from_profile(f64::from(sample_rate), dsp.channels, &profile, enabled);
     true
 }
 
@@ -438,6 +434,23 @@ pub unsafe extern "C" fn mozz_player_current_track(player: *const MozzPlayer) ->
     unsafe { player.as_ref() }
         .map(|p| p.inner.current_track())
         .unwrap_or(0)
+}
+
+/// True between asking for sound — a play, a resume, a seek while playing —
+/// and the device receiving any of it.
+///
+/// This, not `mozz_player_state`, is what says audio is coming out: the state
+/// is Playing the instant a track is accepted, seconds before anything is
+/// heard on a slow network. A shell shows a spinner while this holds. A null
+/// player is never waiting.
+///
+/// # Safety
+/// `player` must be a live handle or null.
+#[no_mangle]
+pub unsafe extern "C" fn mozz_player_is_waiting_for_audio(player: *const MozzPlayer) -> bool {
+    unsafe { player.as_ref() }
+        .map(|p| p.inner.is_waiting_for_audio())
+        .unwrap_or(false)
 }
 
 /// True when a decode has failed since the last command.

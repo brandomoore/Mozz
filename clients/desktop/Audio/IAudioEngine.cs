@@ -87,6 +87,13 @@ public interface IAudioEngine : IDisposable
     /// <summary>Position within the current track. Advances only while audio is actually leaving the device.</summary>
     TimeSpan Position { get; }
 
+    /// <summary>
+    /// True from a <see cref="Play"/>, <see cref="Resume"/> or seek until the device actually receives
+    /// audio for it. <see cref="State"/> cannot say this: it is Playing the moment a track is accepted,
+    /// seconds before anything is heard on a slow network. A failed play is not waiting.
+    /// </summary>
+    bool IsWaitingForAudio { get; }
+
     /// <summary>Length of the current track, from metadata or the decoder; <see cref="TimeSpan.Zero"/> if unknown.</summary>
     TimeSpan Duration { get; }
 

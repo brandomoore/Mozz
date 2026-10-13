@@ -66,6 +66,29 @@ public sealed class RustAudioEngine : IAudioEngine
 
     public TimeSpan Position => TimeSpan.FromSeconds(MozzAudioInterop.mozz_player_position_seconds(_player));
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Two halves. The engine knows when the device first takes audio for what it was given; it cannot
+    /// know about a <see cref="Play"/> it has not accepted yet, because accepting means opening the
+    /// stream — the slow part on a cold network — and that happens on its decode thread. Ids only
+    /// increase, so the engine still reporting an older track than the last one handed over is that
+    /// window. Read the track first: the engine publishes it after it starts waiting, so the wait flag
+    /// read second describes this track and not the one before.
+    /// </remarks>
+    public bool IsWaitingForAudio
+    {
+        get
+        {
+            ulong current = MozzAudioInterop.mozz_player_current_track(_player);
+            // A newer play not yet taken. If it fails to open, that arrives as the Error event, which
+            // ends the wait in the view model; checking the failure flag first would instead let a
+            // stale failure from the previous track hide this one.
+            if (current < Interlocked.Read(ref _suppressAnnounceId)) return true;
+            if (MozzAudioInterop.mozz_player_has_failed(_player)) return false;
+            return MozzAudioInterop.mozz_player_is_waiting_for_audio(_player);
+        }
+    }
+
     public TimeSpan Duration => TimeSpan.FromTicks(Volatile.Read(ref _currentDurationTicks));
 
     public double Volume

@@ -77,6 +77,10 @@ internal static unsafe class MozzAudioInterop
     internal static extern bool mozz_player_has_failed(nint player);
 
     [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static extern bool mozz_player_is_waiting_for_audio(nint player);
+
+    [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void mozz_player_set_equalizer(
         nint player, double* gains_db, double preamp_db,
         [MarshalAs(UnmanagedType.U1)] bool enabled);
