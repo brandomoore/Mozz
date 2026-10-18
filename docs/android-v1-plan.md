@@ -152,7 +152,7 @@ thinking with Android but none of the code. It gets its own plan.
 - **Artwork.** Coil is chosen but unwired; `artworkURL` is ready in the core.
 - **Shuffle and repeat**, which the core has semantics for and the player does
   not yet use.
-- **The brand mark on the other platforms.** `docs/brand/mozz_logo.svg` now holds
-  the new consistent face and Android is generated from it via
-  `tools/svg-to-vector-drawable.py`; iOS, macOS and the desktop app still carry
-  the old one in their own asset catalogues.
+- **Brand mark consistency.** The current face is stored in
+  `tools/icons/mozz-logo.svg`. Run `tools/make-icons.py tools/icons/mozz-logo.svg`
+  to regenerate the Apple startup/loading/onboarding logo and Apple/desktop
+  icons. Android already uses the same face via `tools/svg-to-vector-drawable.py`.

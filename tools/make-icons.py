@@ -35,13 +35,15 @@ USAGE
 
     tools/make-icons.py path/to/logo.svg
 
-Writes the iOS light/dark app icons, the desktop window icon, and the .ico for
-Windows. Requires Pillow and Google Chrome (headless).
+Writes the iOS light/dark app icons, launch/loading/onboarding logo, the desktop
+window icon, and the .ico for Windows. Requires Pillow and Google Chrome
+(headless).
 """
 
 import math
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -51,6 +53,7 @@ from PIL import Image
 
 REPO = Path(__file__).resolve().parent.parent
 IOS_ICONSET = REPO / "App/Mozz/Assets.xcassets/AppIcon.appiconset"
+IOS_LOGOSET = REPO / "App/Mozz/Assets.xcassets/MozzLogo.imageset"
 DESKTOP_ASSETS = REPO / "clients/desktop/Assets"
 
 # The logo grid. Rendering at a multiple of this keeps pixels square.
@@ -59,6 +62,8 @@ GRID = 32
 # was: the art occupies 28 of 32 units, 28 * 26 = 728px, centred in 1024.
 RENDER = 832
 CANVAS = 1024
+LOGO_SIZE = 192
+LOGO_RENDER = LOGO_SIZE * 6
 
 CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -82,7 +87,7 @@ def find_chrome() -> str:
 def render_svg(svg: Path, size: int) -> Image.Image:
     """Rasterise the SVG at `size` with the pixel grid preserved."""
     chrome = find_chrome()
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(prefix="mozz-logo-render-") as tmp:
         tmp = Path(tmp)
         shutil.copy(svg, tmp / "logo.svg")
         (tmp / "page.html").write_text(
@@ -93,15 +98,34 @@ def render_svg(svg: Path, size: int) -> Image.Image:
             "</style></head><body><img src='logo.svg'></body></html>"
         )
         out = tmp / "out.png"
-        subprocess.run(
+        process = subprocess.Popen(
             [
                 chrome, "--headless", "--disable-gpu", "--hide-scrollbars",
+                f"--user-data-dir={tmp / 'profile'}",
+                "--no-first-run", "--no-default-browser-check",
                 "--default-background-color=00000000",
                 f"--screenshot={out}", f"--window-size={size},{size}",
                 f"file://{tmp / 'page.html'}",
             ],
-            check=True, capture_output=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
         )
+        print(f"  renderer pid={process.pid}, profile={tmp / 'profile'}")
+        try:
+            stdout, stderr = process.communicate(timeout=60)
+            if process.returncode:
+                raise subprocess.CalledProcessError(
+                    process.returncode, process.args, stdout, stderr)
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
         return Image.open(out).convert("RGBA").copy()
 
 
@@ -155,6 +179,14 @@ def compose(art: Image.Image, background: Image.Image) -> Image.Image:
     return canvas
 
 
+def write_ios_logos(art: Image.Image) -> None:
+    IOS_LOGOSET.mkdir(parents=True, exist_ok=True)
+    for scale, suffix in ((1, ""), (2, "@2x"), (3, "@3x")):
+        target = IOS_LOGOSET / f"MozzLogo{suffix}.png"
+        downscale(art, LOGO_SIZE * scale).save(target)
+        print(f"  wrote {target.relative_to(REPO)}")
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         sys.exit(f"usage: {sys.argv[0]} <logo.svg>")
@@ -164,6 +196,9 @@ def main() -> None:
 
     art = render_svg(svg, RENDER)
     print(f"rendered {svg.name} at {RENDER}px ({RENDER // GRID}x the {GRID}px grid)")
+
+    # All three logo scales divide this grid-aligned render exactly.
+    write_ios_logos(render_svg(svg, LOGO_RENDER))
 
     # iOS: light and dark.
     for name, (centre, corner) in (
