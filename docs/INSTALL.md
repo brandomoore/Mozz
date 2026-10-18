@@ -1,20 +1,22 @@
 # Installing Mozz
 
-Every download is on the [Releases page](https://github.com/thatcube/Mozz/releases).
-Pick the file for your platform, then follow the section below it.
+**iPhone and iPad:** [Join the public beta on TestFlight](https://testflight.apple.com/join/dmeawSSM).
+Android and desktop downloads are on the
+[Releases page](https://github.com/thatcube/Mozz/releases).
+Choose your platform below for installation steps.
 
 You will need a **Plex**, **Jellyfin**, or **Subsonic / OpenSubsonic** server —
 Mozz plays the music on your server and does not host anything itself.
 
-| Platform | File |
+| Platform | Install |
 |---|---|
+| iPhone / iPad | [TestFlight public beta](https://testflight.apple.com/join/dmeawSSM) — see [iOS](#ios-and-ipados) |
 | Android phone or tablet | `Mozz-android-arm64-v8a-<version>.apk` |
 | Android emulator | `Mozz-android-x86_64-<version>.apk` |
 | Windows 10/11 (64-bit) | `Mozz-win-x64-<version>.zip` |
 | macOS (Apple silicon) | `Mozz-osx-arm64-<version>.zip` |
 | Linux (x64) | `Mozz-linux-x64-<version>.tar.gz` |
 | Linux (arm64) | `Mozz-linux-arm64-<version>.tar.gz` |
-| iPhone / iPad | not on this page — see [iOS](#ios-and-ipados) |
 
 Every release also has a `SHA256SUMS.txt`. To check a download:
 
@@ -101,9 +103,17 @@ silicon Mac.
 
 Requires **iOS / iPadOS 17 or later**.
 
-The iPhone and iPad app is not on the Releases page, because Apple does not allow
-apps to be installed from a download. It ships through TestFlight and the App
-Store — see the [repository's front page](../README.md) for where that stands.
+Mozz is available as a **public TestFlight beta**:
+
+1. Install [TestFlight from the App Store](https://apps.apple.com/app/testflight/id899247664).
+2. Open the [Mozz public beta invitation](https://testflight.apple.com/join/dmeawSSM)
+   on your iPhone or iPad.
+3. Tap **Accept**, then **Install**.
+4. Open Mozz and connect to your Plex, Jellyfin, or Subsonic server.
+
+Keep TestFlight installed to receive beta updates and send feedback. Beta builds
+expire after 90 days; install a newer build through TestFlight when available.
+There is no IPA download on the GitHub Releases page.
 
 You can also build and run it yourself from source with Xcode; see
 [`CONTRIBUTING.md`](../CONTRIBUTING.md).

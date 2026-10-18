@@ -8,6 +8,7 @@ A free, open-source music player for the Plex, Jellyfin, or Subsonic server you 
 <p align="center">
   <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/badge/License-GPL--3.0-blue.svg" /></a>
   <img alt="Platforms: iOS, iPadOS, Android, Windows, macOS, Linux" src="https://img.shields.io/badge/Platforms-iOS%20%C2%B7%20Android%20%C2%B7%20Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-lightgrey.svg" />
+  <a href="https://testflight.apple.com/join/dmeawSSM"><img alt="Join the TestFlight public beta" src="https://img.shields.io/badge/TestFlight-Public%20Beta-007AFF.svg" /></a>
   <a href="https://github.com/sponsors/thatcube"><img alt="Sponsor" src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa.svg" /></a>
 </p>
 
@@ -25,14 +26,17 @@ subway. Mozz is built for both, and it does not push you toward either.
 
 ## Download
 
+**iPhone and iPad:** [Join the public beta on TestFlight](https://testflight.apple.com/join/dmeawSSM).
+Requires **iOS / iPadOS 17 or later**. Install Apple's TestFlight app, open the
+invite link, and tap **Accept**, then **Install**.
+
 Builds for **Android, Windows, macOS and Linux** are on the
 [Releases page](https://github.com/thatcube/Mozz/releases). Per-platform steps —
 including the first-run warnings on Windows and macOS — are in
 [`docs/INSTALL.md`](docs/INSTALL.md).
 
-**iPhone and iPad** ship through TestFlight and the App Store rather than as a
-download, because Apple requires it; you can also build it yourself with Xcode
-(see [`CONTRIBUTING.md`](CONTRIBUTING.md)).
+You can also build Mozz yourself from source (see
+[`CONTRIBUTING.md`](CONTRIBUTING.md)).
 
 ---
 
@@ -156,8 +160,8 @@ Glass player finish on newer iOS.
 
 ## Getting started
 
-1. [Download Mozz](https://github.com/thatcube/Mozz/releases) for your platform and
-   install it — [`docs/INSTALL.md`](docs/INSTALL.md) has the per-platform steps.
+1. [Install Mozz](docs/INSTALL.md) for your platform — TestFlight for iPhone and
+   iPad, or the Releases page for Android and desktop.
 2. Choose your server type: Plex, Jellyfin, or Subsonic. Mozz offers any it finds on
    your network.
 3. Sign in the way that server expects and pick the libraries you want.

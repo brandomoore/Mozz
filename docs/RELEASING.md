@@ -98,6 +98,10 @@ nowhere, and the installer's refusal says nothing a user could act on.
 
 ## iOS
 
+The public beta invitation is
+[testflight.apple.com/join/dmeawSSM](https://testflight.apple.com/join/dmeawSSM).
+Installation steps are in [INSTALL.md](INSTALL.md#ios-and-ipados).
+
 Not part of the tag workflow. Apple requires submission through App Store Connect
 with credentials that are not in this repository.
 
@@ -108,6 +112,10 @@ fastlane beta --env fastlane      # TestFlight
 Fastlane assigns a monotonically increasing build number from TestFlight,
 independent of the commit count. Tag the exact uploaded commit so the marketing
 version and TestFlight build map back to its source. See `fastlane/README.md`.
+
+An upload alone does not make a build publicly installable. Confirm processing
+succeeded, the build belongs to **Mozz Public Beta**, and Apple approved it for
+external testing before announcing it through the public link.
 
 ## What is still manual, and what it would take
 
