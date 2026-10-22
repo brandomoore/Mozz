@@ -262,6 +262,65 @@ final class JellyfinURLTests: XCTestCase {
         XCTAssertTrue(string.contains("fillWidth=300"))
         XCTAssertTrue(string.contains("api_key=jf-token"))
     }
+
+    func testUntaggedInheritedArtworkPreservesServerBasePath() throws {
+        var connection = makeConnection()
+        connection.baseURL = URL(string: "https://jf.example.com/jellyfin")!
+        let backend = JellyfinBackend(
+            connection: connection, token: "jf-token", clientInfo: clientInfo)
+        let url = try XCTUnwrap(backend.artworkURL(for: ArtworkRef(key: "parent"), size: 300))
+        XCTAssertEqual(url.path, "/jellyfin/Items/parent/Images/Primary")
+        let query = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertFalse(query.contains { $0.name == "tag" })
+        XCTAssertEqual(query.first { $0.name == "api_key" }?.value, "jf-token")
+    }
+}
+
+final class JellyfinArtworkTests: XCTestCase {
+    func testPrimaryImageSelectionMatchesServerMetadata() throws {
+        let cases: [(json: String, expected: String?)] = [
+            (#"{"Id":"track","ImageTags":{"Primary":"embedded"},"ParentPrimaryImageItemId":"parent","ParentPrimaryImageTag":"parent-tag","AlbumId":"album","AlbumPrimaryImageTag":"sidecar"}"#, "track|embedded"),
+            (#"{"Id":"track","ParentPrimaryImageItemId":"parent","ParentPrimaryImageTag":"parent-tag","AlbumId":"album","AlbumPrimaryImageTag":"sidecar"}"#, "parent|parent-tag"),
+            (#"{"Id":"track","ParentPrimaryImageItemId":"parent","AlbumId":"album","AlbumPrimaryImageTag":"sidecar"}"#, "parent"),
+            (#"{"Id":"track","ParentPrimaryImageItemId":"parent","ParentPrimaryImageTag":""}"#, "parent"),
+            (#"{"Id":"track","ImageTags":{"Primary":""},"AlbumId":"album","AlbumPrimaryImageTag":"sidecar"}"#, "track"),
+            (#"{"Id":"track","ImageTags":{},"AlbumId":"album","AlbumPrimaryImageTag":"sidecar"}"#, "album|sidecar"),
+            (#"{"Id":"track","ParentPrimaryImageItemId":" ","AlbumId":"album","AlbumPrimaryImageTag":"sidecar"}"#, "album|sidecar"),
+            (#"{"Id":"track","AlbumId":"album"}"#, nil),
+            (#"{"Id":"track","ParentPrimaryImageTag":"orphan","AlbumPrimaryImageTag":"orphan"}"#, nil),
+            (#"{"Id":"track","ImageTags":{"Backdrop":"not-a-cover"}}"#, nil),
+        ]
+        for sample in cases {
+            let dto = try JSONDecoder().decode(JFBaseItem.self, from: Data(sample.json.utf8))
+            XCTAssertEqual(JellyfinMapper.track(dto).artwork?.key, sample.expected, sample.json)
+        }
+    }
+
+    func testInheritedPrimaryImagesReachAllCatalogKinds() throws {
+        let dto = try JSONDecoder().decode(JFBaseItem.self, from: Data(
+            #"{"Id":"item","ParentPrimaryImageItemId":"parent","ParentPrimaryImageTag":"cover"}"#.utf8))
+        XCTAssertEqual(JellyfinMapper.album(dto).artwork?.key, "parent|cover")
+        XCTAssertEqual(JellyfinMapper.artist(dto).artwork?.key, "parent|cover")
+        XCTAssertEqual(JellyfinMapper.playlist(dto).artwork?.key, "parent|cover")
+    }
+
+    func testCatalogDetailsAndPlaylistItemsKeepInheritedArtwork() async throws {
+        let transport = FixtureTransport([.init(contains: "/", fixture: "jf_inherited_artwork")])
+        let backend = makeBackend(transport)
+        let tracks = try await backend.fetchTracks(offset: 0, limit: 10)
+        let details = try await backend.fetchTrackDetails(ids: ["item"])
+        let playlist = try await backend.fetchPlaylistItems(playlistID: "playlist", offset: 0, limit: 10)
+        let albums = try await backend.fetchAlbums(offset: 0, limit: 10)
+        for art in [tracks.items.first?.artwork, details.first?.artwork,
+                    playlist.items.first?.artwork, albums.items.first?.artwork] {
+            let reference = try XCTUnwrap(art)
+            XCTAssertEqual(reference.key, "parent|cover")
+            let url = try XCTUnwrap(backend.artworkURL(for: reference, size: 300))
+            XCTAssertEqual(url.path, "/Items/parent/Images/Primary")
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first { $0.name == "tag" }?.value, "cover")
+        }
+    }
 }
 
 final class JellyfinAuthTests: XCTestCase {

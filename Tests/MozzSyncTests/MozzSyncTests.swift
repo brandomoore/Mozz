@@ -131,6 +131,34 @@ private func makeTracks(_ count: Int) -> [Track] {
 }
 
 final class LibrarySyncEngineTests: XCTestCase {
+    func testFullSyncRepairsAlbumGridFromEmbeddedTrackArtwork() async throws {
+        let database = try MusicDatabase.inMemory()
+        var backend = MockBackend()
+        backend.albums = [Album(id: "al0", title: "Embedded cover album", artistName: "Band")]
+        backend.tracks = [
+            Track(id: "t0", title: "Embedded", albumID: "al0", artistName: "Band",
+                  artwork: ArtworkRef(key: "t0|embedded")),
+            Track(id: "t1", title: "No own image", albumID: "al0", artistName: "Band"),
+        ]
+        _ = try await LibrarySyncEngine(backend: backend, database: database).sync()
+        let repository = LibraryRepository(database)
+        let album = try await repository.albumsPage(serverId: "srv", offset: 0, limit: 1).first
+        let tracks = try await repository.tracks(forAlbumRemoteId: "al0", serverId: "srv")
+        XCTAssertEqual(album?.artworkKey, "t0|embedded")
+        XCTAssertEqual(tracks.map(\.artworkKey), ["t0|embedded", "t0|embedded"])
+
+        backend.albums[0].artwork = ArtworkRef(key: "al0|custom")
+        _ = try await LibrarySyncEngine(backend: backend, database: database).sync()
+        let refreshed = try await repository.albumsPage(serverId: "srv", offset: 0, limit: 1).first
+        XCTAssertEqual(refreshed?.artworkKey, "al0|custom", "a later server cover replaces derived artwork")
+
+        backend.albums[0].artwork = nil
+        backend.tracks[0].artwork = nil
+        _ = try await LibrarySyncEngine(backend: backend, database: database).sync()
+        let removed = try await repository.albumsPage(serverId: "srv", offset: 0, limit: 1).first
+        XCTAssertNil(removed?.artworkKey, "removed server artwork must not be resurrected from stale rows")
+    }
+
     func testFullSyncPopulatesDatabase() async throws {
         let database = try MusicDatabase.inMemory()
         var backend = MockBackend()

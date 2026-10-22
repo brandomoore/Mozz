@@ -1,0 +1,14 @@
+{
+  "Items": [
+    {
+      "Id": "item",
+      "Name": "Inherited cover",
+      "ImageTags": {},
+      "ParentPrimaryImageItemId": "parent",
+      "ParentPrimaryImageTag": "cover",
+      "AlbumId": "album",
+      "AlbumPrimaryImageTag": "album-cover"
+    }
+  ],
+  "TotalRecordCount": 1
+}

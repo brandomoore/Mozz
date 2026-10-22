@@ -375,6 +375,7 @@ public struct LibrarySyncEngine: Sendable {
             deleted += try await writer.pruneArtists(serverId: serverId, keeping: artistIDs.seen)
             deleted += try await writer.prunePlaylists(serverId: serverId, keeping: playlistIDs.seen)
         }
+        try await writer.repairJellyfinArtwork(serverId: serverId)
 
         // Report the live artist total (server-listed + synthesized) so the
         // count stays consistent across syncs — synthesized artists persist in

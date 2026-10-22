@@ -58,6 +58,8 @@ struct JFBaseItem: Decodable {
     let RunTimeTicks: Int64?
     let Genres: [String]?
     let ImageTags: [String: String]?
+    let ParentPrimaryImageItemId: String?
+    let ParentPrimaryImageTag: String?
     let AlbumPrimaryImageTag: String?
     let ChildCount: Int?
     let UserData: JFUserData?
@@ -76,6 +78,7 @@ struct JFBaseItem: Decodable {
         case Id, Name, SortName, AlbumArtist, AlbumArtists, ArtistItems, Artists
         case Album, AlbumId, ProductionYear, IndexNumber, ParentIndexNumber
         case RunTimeTicks, Genres, ImageTags, AlbumPrimaryImageTag, ChildCount
+        case ParentPrimaryImageItemId, ParentPrimaryImageTag
         case UserData, MediaSources, NormalizationGain, DateCreated, ProviderIds, CollectionType
     }
 }

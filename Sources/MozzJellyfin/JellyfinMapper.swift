@@ -11,7 +11,7 @@ enum JellyfinMapper {
             id: item.Id,
             name: item.Name ?? "Unknown Artist",
             sortName: item.SortName,
-            artwork: artwork(itemID: item.Id, tag: item.ImageTags?["Primary"]),
+            artwork: primaryArtwork(item),
             genres: item.Genres ?? [],
             isFavorite: item.UserData?.IsFavorite ?? false
         )
@@ -25,7 +25,7 @@ enum JellyfinMapper {
             artistName: item.AlbumArtist ?? item.AlbumArtists?.first?.Name ?? "Unknown Artist",
             artistID: item.AlbumArtists?.first?.Id,
             year: item.ProductionYear,
-            artwork: artwork(itemID: item.Id, tag: item.ImageTags?["Primary"]),
+            artwork: primaryArtwork(item),
             trackCount: item.ChildCount,
             genres: item.Genres ?? [],
             isFavorite: item.UserData?.IsFavorite ?? false,
@@ -45,8 +45,6 @@ enum JellyfinMapper {
             channels: audio?.Channels,
             bitDepth: audio?.BitDepth
         )
-        let art = artwork(itemID: item.Id, tag: item.ImageTags?["Primary"])
-            ?? artwork(itemID: item.AlbumId, tag: item.AlbumPrimaryImageTag)
         return Track(
             id: item.Id,
             title: item.Name ?? "Unknown",
@@ -62,7 +60,7 @@ enum JellyfinMapper {
             format: format,
             fileSizeBytes: source?.Size,
             mediaKey: item.Id,
-            artwork: art,
+            artwork: primaryArtwork(item),
             genres: item.Genres ?? [],
             isFavorite: item.UserData?.IsFavorite ?? false,
             normalizationGainDB: item.NormalizationGain,
@@ -78,20 +76,32 @@ enum JellyfinMapper {
             title: item.Name ?? "Playlist",
             trackCount: item.ChildCount,
             durationSeconds: item.RunTimeTicks.map { Double($0) / ticksPerSecond },
-            artwork: artwork(itemID: item.Id, tag: item.ImageTags?["Primary"]),
+            artwork: primaryArtwork(item),
             isSmart: false
         )
     }
 
-    /// Encodes an artwork reference as `itemId|tag`. Jellyfin always returns the
-    /// image's `tag` in `ImageTags`/`AlbumPrimaryImageTag` when — and only when —
-    /// the item actually has that image, so a missing tag means "no image": we
-    /// return nil rather than a bare `itemId`, which would build an
-    /// `Items/{id}/Images/Primary` URL that 404s. Returning nil here is also what
-    /// makes the track's album-art fallback (below) actually fire.
-    static func artwork(itemID: String?, tag: String?) -> ArtworkRef? {
-        guard let itemID, let tag else { return nil }
-        return ArtworkRef(key: "\(itemID)|\(tag)")
+    /// Embedded and sidecar covers use the same Primary endpoint. A parent
+    /// reference proves an image exists even when its optional cache tag is absent.
+    private static func primaryArtwork(_ item: JFBaseItem) -> ArtworkRef? {
+        if let tag = item.ImageTags?["Primary"],
+           let own = artwork(itemID: item.Id, tag: tag) {
+            return own
+        }
+        if let parent = artwork(itemID: item.ParentPrimaryImageItemId, tag: item.ParentPrimaryImageTag) {
+            return parent
+        }
+        if let tag = item.AlbumPrimaryImageTag {
+            return artwork(itemID: item.AlbumId, tag: tag)
+        }
+        return nil
+    }
+
+    private static func artwork(itemID: String?, tag: String?) -> ArtworkRef? {
+        guard let itemID = itemID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !itemID.isEmpty else { return nil }
+        let tag = tag?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ArtworkRef(key: tag.flatMap { $0.isEmpty ? nil : "\(itemID)|\($0)" } ?? itemID)
     }
 
     static func date(_ string: String?) -> Date? {

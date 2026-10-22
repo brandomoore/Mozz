@@ -80,6 +80,46 @@ public struct CatalogWriter: Sendable {
         }
     }
 
+    /// Fill missing Jellyfin covers from already-known images in the same album.
+    /// No guessed URLs or network requests; explicit server covers always win.
+    public func repairJellyfinArtwork(serverId: ServerID) async throws {
+        try await database.write { db in
+            try Self.repairJellyfinArtwork(in: db, serverId: serverId)
+        }
+    }
+
+    static func repairJellyfinArtwork(in db: Database, serverId: ServerID) throws {
+        guard try String.fetchOne(db, sql: "SELECT kind FROM server WHERE id = ?",
+                                  arguments: [serverId]) == BackendKind.jellyfin.rawValue else { return }
+        try db.execute(sql: """
+            UPDATE album SET artworkKey = (
+                SELECT t.artworkKey FROM track t
+                WHERE t.serverId = album.serverId AND t.albumRemoteId = album.remoteId
+                  AND t.artworkKey IS NOT NULL AND TRIM(t.artworkKey) <> ''
+                ORDER BY COALESCE(t.discNumber, 1), COALESCE(t.trackNumber, 2147483647), t.remoteId
+                LIMIT 1
+            )
+            WHERE serverId = ? AND (artworkKey IS NULL OR TRIM(artworkKey) = '')
+              AND EXISTS (
+                SELECT 1 FROM track t
+                WHERE t.serverId = album.serverId AND t.albumRemoteId = album.remoteId
+                  AND t.artworkKey IS NOT NULL AND TRIM(t.artworkKey) <> ''
+              )
+            """, arguments: [serverId])
+        try db.execute(sql: """
+            UPDATE track SET artworkKey = (
+                SELECT a.artworkKey FROM album a
+                WHERE a.serverId = track.serverId AND a.remoteId = track.albumRemoteId
+            )
+            WHERE serverId = ? AND (artworkKey IS NULL OR TRIM(artworkKey) = '')
+              AND EXISTS (
+                SELECT 1 FROM album a
+                WHERE a.serverId = track.serverId AND a.remoteId = track.albumRemoteId
+                  AND a.artworkKey IS NOT NULL AND TRIM(a.artworkKey) <> ''
+              )
+            """, arguments: [serverId])
+    }
+
     public func upsertAlbums(
         _ albums: [Album],
         serverId: ServerID,
@@ -112,6 +152,7 @@ public struct CatalogWriter: Sendable {
     ) async throws {
         guard !tracks.isEmpty else { return }
         try await database.write { db in
+            let albumArtwork = try Self.jellyfinAlbumArtwork(for: tracks, serverId: serverId, in: db)
             let stmt = try db.makeStatement(sql: Self.trackUpsertSQL)
             for track in tracks {
                 try stmt.execute(arguments: [
@@ -120,7 +161,8 @@ public struct CatalogWriter: Sendable {
                     track.albumArtistName, track.trackNumber, track.discNumber, track.duration,
                     track.format.container, track.format.codec, track.format.bitrateKbps,
                     track.format.sampleRateHz, track.format.channels, track.format.bitDepth,
-                    track.fileSizeBytes, track.mediaKey, track.artwork?.key,
+                    track.fileSizeBytes, track.mediaKey,
+                    track.artwork?.key ?? track.albumID.flatMap { albumArtwork[$0] },
                     track.isFavorite, track.rating, track.normalizationGainDB,
                     track.addedAt?.timeIntervalSince1970, Self.jsonText(track.genres),
                 ])
@@ -161,6 +203,24 @@ public struct CatalogWriter: Sendable {
                 try CatalogSyncStore.save(syncCheckpoint, in: db)
             }
         }
+    }
+
+    private static func jellyfinAlbumArtwork(
+        for tracks: [Track], serverId: ServerID, in db: Database
+    ) throws -> [String: String] {
+        let albumIDs = Set(tracks.filter { $0.artwork == nil }.compactMap(\.albumID))
+        guard !albumIDs.isEmpty,
+              try String.fetchOne(db, sql: "SELECT kind FROM server WHERE id = ?",
+                                  arguments: [serverId]) == BackendKind.jellyfin.rawValue else { return [:] }
+        let encodedIDs = String(decoding: try JSONEncoder().encode(albumIDs.sorted()), as: UTF8.self)
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT remoteId, artworkKey FROM album
+            WHERE serverId = ? AND remoteId IN (SELECT value FROM json_each(?))
+              AND artworkKey IS NOT NULL AND TRIM(artworkKey) <> ''
+            """, arguments: [serverId, encodedIDs])
+        return Dictionary(uniqueKeysWithValues: rows.map {
+            ($0["remoteId"] as String, $0["artworkKey"] as String)
+        })
     }
 
     public func upsertPlaylists(

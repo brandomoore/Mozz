@@ -90,6 +90,26 @@ for each are in [`clients/android/README.md`](clients/android/README.md) and
 - **Search that keeps up.** Results appear as you type, and accents and punctuation
   don't get in the way — "bjork" finds "Björk".
 
+#### Jellyfin artwork
+
+Mozz uses Jellyfin's image API for both embedded covers and local image files;
+it does not download songs just to extract their artwork. An item's own cover
+takes priority, followed by an explicitly inherited parent or album cover.
+If an album has no cover of its own, Mozz can use a known cover from one of its
+tracks. Custom server covers are not replaced.
+
+Existing libraries recover missing covers from artwork already in the local
+catalog. Use **Sync Now** in Settings to fetch newly available image metadata;
+there is no need to sign out, reinstall, or remove downloads.
+
+If artwork works in Jellyfin or another client but not Mozz, include the Mozz
+build, Jellyfin version, and whether the affected view is albums, songs, or the
+player in your report. A single affected item's `ImageTags`,
+`ParentPrimaryImageItemId`, `ParentPrimaryImageTag`, `AlbumId`, and
+`AlbumPrimaryImageTag` fields can help distinguish missing metadata from an image
+request failure. Never share passwords, access tokens, or image URLs containing
+`api_key`.
+
 ### Playback
 
 - **Near-gapless.** Tracks flow into one another without a silent gap between them,

@@ -30,6 +30,7 @@ enum Schema {
         registerV21(&migrator)
         registerV22(&migrator)
         registerV23(&migrator)
+        registerV25(&migrator)
         return migrator
     }
     private static func registerV1(_ migrator: inout DatabaseMigrator) {
@@ -792,6 +793,15 @@ enum Schema {
                 t.add(column: "server_id", .text)
             }
             try backfillMixServerIds(db)
+        }
+    }
+
+    private static func registerV25(_ migrator: inout DatabaseMigrator) {
+        migrator.registerMigration("v25.jellyfinAlbumArtwork") { db in
+            let servers = try String.fetchAll(db, sql: "SELECT id FROM server WHERE kind = 'jellyfin'")
+            for serverId in servers {
+                try CatalogWriter.repairJellyfinArtwork(in: db, serverId: serverId)
+            }
         }
     }
 

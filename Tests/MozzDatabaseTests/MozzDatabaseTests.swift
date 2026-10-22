@@ -1148,6 +1148,93 @@ final class SyntheticCatalogTests: XCTestCase {
 // MARK: - v9/v10 Jellyfin artwork repair migrations
 
 final class JellyfinArtworkRepairMigrationTests: XCTestCase {
+    func testDetailBackfillKeepsAlbumFallbackAndDownloadIdentity() async throws {
+        let database = try MusicDatabase.inMemory()
+        let writer = CatalogWriter(database)
+        let repository = LibraryRepository(database)
+        try await writer.saveServer(makeServer())
+        try await writer.upsertAlbums([
+            Album(id: "album", title: "Album", artistName: "Band", artwork: ArtworkRef(key: "album|cover")),
+        ], serverId: "srv1")
+        let track = Track(id: "track", title: "Track", albumID: "album", artistName: "Band")
+        try await writer.upsertTracks([track], serverId: "srv1")
+        let before = try await XCTUnwrapAsync(try await repository.track(serverId: "srv1", remoteId: "track"))
+        try await database.write { db in
+            try db.execute(sql: """
+                INSERT INTO download (trackId, state, sizeBytes, requestedAt)
+                VALUES (?, 'complete', 1234, 1)
+                """, arguments: [before.id])
+        }
+        try await writer.upsertTracks([track], serverId: "srv1")
+        try await writer.repairJellyfinArtwork(serverId: "srv1")
+        let after = try await XCTUnwrapAsync(try await repository.track(serverId: "srv1", remoteId: "track"))
+        XCTAssertEqual(after.id, before.id)
+        XCTAssertEqual(after.artworkKey, "album|cover")
+        let downloads = try await database.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM download WHERE trackId = ? AND state = 'complete'",
+                             arguments: [before.id])
+        }
+        XCTAssertEqual(downloads, 1)
+    }
+
+    func testMissingAlbumArtworkUsesEmbeddedTrackCoverOnUpgrade() throws {
+        let queue = try DatabaseQueue()
+        let migrator = Schema.makeMigrator()
+        try migrator.migrate(queue, upTo: "v24.mixesBelongToAServer")
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO server (id, kind, name, baseURL, clientIdentifier) VALUES
+                    ('jf', 'jellyfin', 'JF', 'https://jf.local', 'c1'),
+                    ('other', 'jellyfin', 'Other', 'https://other.local', 'c2'),
+                    ('px', 'plex', 'PX', 'https://px.local', 'c3');
+                INSERT INTO album (serverId, remoteId, title, artistName, artworkKey) VALUES
+                    ('jf', 'embedded', 'Embedded', 'Band', NULL),
+                    ('jf', 'custom', 'Custom', 'Band', 'custom|cover'),
+                    ('jf', 'absent', 'Absent', 'Band', NULL),
+                    ('other', 'embedded', 'Other server', 'Band', NULL),
+                    ('px', 'embedded', 'Plex', 'Band', NULL);
+                INSERT INTO track
+                    (serverId, remoteId, title, artistName, albumRemoteId, artworkKey, discNumber, trackNumber)
+                VALUES
+                    ('jf', 'second', 'Second', 'Band', 'embedded', 'second|cover', 1, 2),
+                    ('jf', 'first', 'First', 'Band', 'embedded', 'first|cover', 1, 1),
+                    ('jf', 'noCover', 'Missing', 'Band', 'embedded', NULL, 1, 3),
+                    ('jf', 'individual', 'Individual', 'Band', 'custom', 'individual|cover', 1, 1),
+                    ('jf', 'albumOnly', 'Album cover', 'Band', 'custom', NULL, 1, 2),
+                    ('jf', 'absent', 'Absent', 'Band', 'absent', NULL, 1, 1),
+                    ('px', 'first', 'Plex', 'Band', 'embedded', 'plex-cover', 1, 1);
+                """)
+        }
+
+        try migrator.migrate(queue)
+        try queue.read { db in
+            let albums = try Row.fetchAll(db, sql: """
+                SELECT serverId, remoteId, artworkKey FROM album ORDER BY serverId, remoteId
+                """)
+            func album(_ server: String, _ id: String) -> String? {
+                albums.first { ($0["serverId"] as String) == server && ($0["remoteId"] as String) == id }?["artworkKey"]
+            }
+            XCTAssertEqual(album("jf", "embedded"), "first|cover")
+            XCTAssertEqual(album("jf", "custom"), "custom|cover")
+            XCTAssertNil(album("jf", "absent"))
+            XCTAssertNil(album("other", "embedded"), "remote ids must not cross server boundaries")
+            XCTAssertNil(album("px", "embedded"), "do not change other providers")
+            let tracks = try Dictionary(uniqueKeysWithValues: Row.fetchAll(db, sql: """
+                SELECT remoteId, artworkKey FROM track WHERE serverId = 'jf'
+                """).map { ($0["remoteId"] as String, $0["artworkKey"] as String?) })
+            XCTAssertEqual(tracks["noCover"], "first|cover")
+            XCTAssertEqual(tracks["individual"], "individual|cover")
+            XCTAssertEqual(tracks["albumOnly"], "custom|cover")
+            XCTAssertNil(tracks["absent"] ?? nil)
+        }
+        try migrator.migrate(queue)
+        let changed = try queue.write { db -> Int in
+            try CatalogWriter.repairJellyfinArtwork(in: db, serverId: "jf")
+            return db.changesCount
+        }
+        XCTAssertEqual(changed, 0, "repair must not rewrite rows that already have artwork")
+    }
+
     /// Stage the schema to v8, insert data as an early (buggy) sync would have —
     /// including tracks/albums/artists whose `artworkKey` is a bare item id that
     /// 404s — then run the real registered v9+v10 migrations and assert the whole
