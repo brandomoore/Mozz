@@ -7,6 +7,7 @@ import Foundation
 /// playback automatic).
 public struct ResolvedTrackURL: Sendable, Hashable {
     public var url: URL
+    public var headers: [String: String]
     public var isLocal: Bool
     /// Server stream session id, if any, to report progress/stop for the same
     /// session. `nil` for local files.
@@ -17,8 +18,10 @@ public struct ResolvedTrackURL: Sendable, Hashable {
     /// which seeks natively. See ``TrackURLResolver/resolve(_:startSeconds:)``.
     public var requiresServerSeek: Bool
 
-    public init(url: URL, isLocal: Bool, sessionID: String? = nil, requiresServerSeek: Bool = false) {
+    public init(url: URL, isLocal: Bool, sessionID: String? = nil, requiresServerSeek: Bool = false,
+                headers: [String: String] = [:]) {
         self.url = url
+        self.headers = headers
         self.isLocal = isLocal
         self.sessionID = sessionID
         self.requiresServerSeek = requiresServerSeek
@@ -67,7 +70,8 @@ public struct StreamingTrackURLResolver: TrackURLResolver {
             sessionID: source.sessionID,
             // Only a transcode on a backend that seeks via server offset needs
             // the re-resolve seek path; everything else seeks natively (range).
-            requiresServerSeek: source.isTranscoded && backend.supportsTranscodeSeek
+            requiresServerSeek: source.isTranscoded && backend.supportsTranscodeSeek,
+            headers: source.headers
         )
     }
 }

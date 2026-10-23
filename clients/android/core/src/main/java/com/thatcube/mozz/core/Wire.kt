@@ -472,6 +472,7 @@ data class StreamSource(
     val url: String,
     val isTranscoded: Boolean = false,
     val sessionID: String? = null,
+    val headers: Map<String, String> = emptyMap(),
 )
 
 /**

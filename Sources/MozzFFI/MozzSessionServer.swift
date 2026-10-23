@@ -94,6 +94,7 @@ struct WirePlexSwitchedToken: Encodable {
 
 struct WireStream: Encodable {
     var url: String
+    var headers: [String: String]
     var isTranscoded: Bool
     var sessionID: String?
 }
@@ -623,6 +624,7 @@ func dispatchServerCommand(
             for: record.toDomain(), options: streamOptions(request))
         return session.success(request, WireStream(
             url: source.url.absoluteString,
+            headers: source.headers,
             isTranscoded: source.isTranscoded,
             sessionID: source.sessionID
         ))

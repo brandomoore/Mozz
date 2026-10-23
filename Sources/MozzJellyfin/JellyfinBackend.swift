@@ -540,7 +540,11 @@ public struct JellyfinBackend: MusicBackend {
         guard let url = mediaURL(path: "Audio/\(track.id)/universal", query: query) else {
             throw MozzError.invalidResponse
         }
-        return StreamSource(url: url, isTranscoded: transcoded, sessionID: sessionID)
+        return StreamSource(
+            url: url, isTranscoded: transcoded, sessionID: sessionID,
+            headers: ["Authorization": JellyfinAuth.authorizationHeader(
+                clientInfo: clientInfo, deviceID: connection.clientIdentifier, token: token)]
+        )
     }
 
     public func originalFileURL(for track: Track) throws -> URL {

@@ -408,6 +408,9 @@ public final class AppEnvironment: ObservableObject {
         self.repository = LibraryRepository(database)
         self.downloads = DownloadManager(database: database, fileStore: fileStore)
         self.playback = PlaybackEngine(resolver: resolver)
+        self.playback.onDiagnostic = SyncDiagnosticsLog(
+            fileName: "playback-diagnostics.log", maximumBytes: 256 * 1024
+        ).sink
         self.playEvents = PlayEventStore(database)
         self.recommendations = RecommendationService(
             store: RecommendationStore(database),

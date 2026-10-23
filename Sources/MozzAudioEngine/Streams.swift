@@ -89,6 +89,7 @@ public final class HTTPStream: AudioEngine.Stream {
     private let request: URLRequest
     private let session: URLSession
     private let timeout: TimeInterval
+    private let diagnostics: (@Sendable (String) -> Void)?
 
     /// Bytes already delivered, which is also the offset the next request needs.
     private var position: Int64 = 0
@@ -99,6 +100,7 @@ public final class HTTPStream: AudioEngine.Stream {
     /// Absolute offset the buffer starts at.
     private var bufferStart: Int64 = 0
     private var closed = false
+    private var loggedResponse = false
 
     /// How much to ask for at a time.
     ///
@@ -110,12 +112,14 @@ public final class HTTPStream: AudioEngine.Stream {
         request: URLRequest,
         session: URLSession = .shared,
         chunkSize: Int = 512 * 1024,
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        diagnostics: (@Sendable (String) -> Void)? = nil
     ) {
         self.request = request
         self.session = session
         self.chunkSize = chunkSize
         self.timeout = timeout
+        self.diagnostics = diagnostics
     }
 
     public func read(into buffer: UnsafeMutablePointer<UInt8>, count: Int) -> Int {
@@ -188,20 +192,33 @@ public final class HTTPStream: AudioEngine.Stream {
         let gate = DispatchSemaphore(value: 0)
         var payload: Data?
         var response: HTTPURLResponse?
+        let diagnostics = self.diagnostics
 
-        let task = session.dataTask(with: ranged) { data, urlResponse, _ in
+        let task = session.dataTask(with: ranged) { data, urlResponse, error in
             payload = data
             response = urlResponse as? HTTPURLResponse
+            if let error = error as NSError? {
+                NSLog("Mozz audio request failed: domain=%@ code=%ld", error.domain, error.code)
+                diagnostics?("audio request failed: domain=\(error.domain) code=\(error.code)")
+            }
             gate.signal()
         }
         task.resume()
 
         if gate.wait(timeout: .now() + timeout + 5) == .timedOut {
             task.cancel()
+            NSLog("Mozz audio request timed out")
+            diagnostics?("audio request timed out")
             return false
         }
 
         guard let response, let payload else { return false }
+        if !loggedResponse || !(200...299).contains(response.statusCode) {
+            NSLog("Mozz audio response: status=%ld type=%@ bytes=%ld offset=%lld",
+                  response.statusCode, response.mimeType ?? "unknown", payload.count, offset)
+            diagnostics?("audio response: status=\(response.statusCode) type=\(response.mimeType ?? "unknown") bytes=\(payload.count) offset=\(offset)")
+            loggedResponse = true
+        }
 
         switch response.statusCode {
         case 206:

@@ -428,6 +428,7 @@ class PlayerController(
         // whole of what "offline" means. A download the player ignores is a
         // progress bar that cost somebody storage and bought them nothing.
         val local = downloadedFile(track)
+        var headers = emptyMap<String, String>()
         val uri = if (local != null) {
             local.toURI().toString()
         } else {
@@ -436,6 +437,7 @@ class PlayerController(
             // the bytes are coming from. A downloaded file has none, and needs
             // none: nothing is being streamed to attribute.
             source.sessionID?.let { streamSessions[track.remoteId] = it }
+            headers = source.headers
             source.url
         }
         // The same artwork the app shows, so the notification, the lock screen
@@ -446,7 +448,7 @@ class PlayerController(
             runCatching { server.artworkUrl(track.serverId, key, ARTWORK_SIZE) }.getOrNull()
         }
         MediaItem.Builder()
-            .setUri(uri)
+            .setStreamRequest(uri, headers)
             .setMediaId(track.remoteId)
             .setMediaMetadata(
                 MediaMetadata.Builder()

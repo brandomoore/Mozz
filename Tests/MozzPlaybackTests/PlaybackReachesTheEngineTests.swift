@@ -25,6 +25,14 @@ final class PlaybackReachesTheEngineTests: XCTestCase {
         }
     }
 
+    private struct FileByTrackResolver: TrackURLResolver {
+        let files: [String: URL]
+        func resolve(_ track: Track) async throws -> ResolvedTrackURL {
+            guard let url = files[track.id] else { throw MozzError.notFound }
+            return ResolvedTrackURL(url: url, isLocal: true)
+        }
+    }
+
     private var written: [URL] = []
 
     override func tearDown() {
@@ -150,8 +158,52 @@ final class PlaybackReachesTheEngineTests: XCTestCase {
         engine.play(tracks: [Track(id: "t0", title: "T", artistName: "A")])
 
         await eventually("the failure surfaces") {
-            engine.snapshot.status != .playing && engine.snapshot.elapsed == 0
+            engine.lastFailure != nil && engine.snapshot.status == .paused
         }
+        XCTAssertEqual(engine.currentTrack?.id, "t0")
+        XCTAssertEqual(engine.lastFailure?.skippedTracks, 0)
+        engine.stop()
+    }
+
+    func testDecoderFailuresStopAfterEightAttemptsEvenWhenRepeating() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mozz-not-audio-\(UUID().uuidString).bin")
+        try Data(repeating: 9, count: 4_096).write(to: url)
+        written.append(url)
+
+        for mode in [MozzPlayback.RepeatMode.off, .all, .one] {
+            let engine = PlaybackEngine(resolver: RealFileResolver(url: url))
+            engineUnderTest = engine
+            engine.setRepeatMode(mode)
+            engine.play(tracks: (0..<50).map {
+                Track(id: "t\($0)", title: "T", artistName: "A")
+            })
+            await eventually("decoder failures stop the queue") {
+                engine.snapshot.status == .paused && engine.lastFailure != nil
+            }
+            XCTAssertEqual(engine.lastFailure?.skippedTracks, 7)
+            let failedTrack = engine.currentTrack?.id
+            await settle(0.15)
+            XCTAssertEqual(engine.currentTrack?.id, failedTrack, "a latched failure must not keep skipping")
+            XCTAssertEqual(engine.snapshot.status, .paused)
+            engine.stop()
+        }
+    }
+
+    func testActualAudioClearsAPreviousDecoderFailure() async throws {
+        let invalid = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mozz-not-audio-\(UUID().uuidString).bin")
+        try Data(repeating: 9, count: 4_096).write(to: invalid)
+        written.append(invalid)
+        let valid = try makeWav(seconds: 10)
+        let engine = PlaybackEngine(resolver: FileByTrackResolver(files: ["bad": invalid, "good": valid]))
+        engineUnderTest = engine
+        engine.play(tracks: [Track(id: "bad", title: "T", artistName: "A")])
+        await eventually("invalid audio is reported") { engine.lastFailure != nil }
+
+        engine.play(tracks: [Track(id: "good", title: "T", artistName: "A")])
+        await eventually("valid audio reaches the output") { engine.snapshot.elapsed > 0.05 }
+        XCTAssertNil(engine.lastFailure)
         engine.stop()
     }
 

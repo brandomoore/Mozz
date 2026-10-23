@@ -194,6 +194,16 @@ public final class AudioEngine {
         return mozz_player_has_failed(handle)
     }
 
+    /// Decoder diagnostics contain container/codec context, not source URLs.
+    public var failureDescription: String {
+        guard let handle else { return "" }
+        var bytes = [UInt8](repeating: 0, count: 1_024)
+        let count = bytes.withUnsafeMutableBufferPointer {
+            mozz_player_failure_message(handle, $0.baseAddress, UInt($0.count))
+        }
+        return String(decoding: bytes.prefix(Int(min(count, UInt(bytes.count)))), as: UTF8.self)
+    }
+
     /// True between asking for sound — `playNow`, `resume`, a seek while
     /// playing — and the device receiving any of it.
     ///

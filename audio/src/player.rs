@@ -27,7 +27,7 @@
 use std::io::{Read, Seek};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -177,6 +177,9 @@ struct Observable {
     /// that will never play, or writing off a good track over a one second
     /// network fault.
     failure_kind: AtomicU64,
+    // Only touched on failure/reset or an explicit diagnostic read, never by
+    // the audio callback.
+    failure_message: Mutex<String>,
     /// Absolute ring frame at which the current track began.
     ///
     /// Position is the difference between this and the ring's read position,
@@ -219,6 +222,7 @@ impl Observable {
             sample_rate: AtomicU64::new(sample_rate as u64),
             failed: AtomicBool::new(false),
             failure_kind: AtomicU64::new(0),
+            failure_message: Mutex::new(String::new()),
             track_start_frame: AtomicI64::new(0),
             waiting_for_audio: AtomicBool::new(false),
             awaited_track: AtomicU64::new(0),
@@ -414,6 +418,11 @@ impl Player {
         self.observable.current_track.load(Ordering::Acquire)
     }
 
+    /// Decoder context for diagnostics. Sources provide bytes, never URLs or credentials.
+    pub fn failure_message(&self) -> String {
+        self.observable.failure_message.lock().unwrap().clone()
+    }
+
     /// True between asking for sound and the device receiving any of it.
     ///
     /// The difference between "playing" and "audible": a shell shows a
@@ -569,6 +578,7 @@ fn apply(
         } => {
             observable.failed.store(false, Ordering::Relaxed);
             observable.failure_kind.store(0, Ordering::Relaxed);
+            observable.failure_message.lock().unwrap().clear();
             match AudioDecoder::open(SourceBox(source), extension.as_deref()) {
                 Ok(decoder) => {
                     engine.play_now(decoder, track, gain_db);
@@ -589,6 +599,7 @@ fn apply(
                     // exactly like "it played the wrong song": new title, new
                     // artwork, previous audio.
                     engine.stop();
+                    observable.current_track.store(track, Ordering::Release);
                     fail(observable, error);
                 }
             }
@@ -630,6 +641,9 @@ fn apply(
         }
         Command::Stop => {
             observable.stop_waiting();
+            observable.failed.store(false, Ordering::Relaxed);
+            observable.failure_kind.store(0, Ordering::Relaxed);
+            observable.failure_message.lock().unwrap().clear();
             engine.stop();
             if let Some(sink) = sink {
                 let _ = sink.pause();
@@ -673,6 +687,7 @@ fn fail(observable: &Observable, error: DecodeError) {
     // Nothing is coming; a shell waiting for it should hear about the failure,
     // not keep waiting.
     observable.stop_waiting();
+    *observable.failure_message.lock().unwrap() = error.to_string();
     observable
         .failure_kind
         .store(FailureKind::of(&error).code(), Ordering::Relaxed);

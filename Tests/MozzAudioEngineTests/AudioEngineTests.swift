@@ -151,6 +151,12 @@ final class AudioEngineTests: XCTestCase {
 
         eventually("the failure is reported") { engine.hasFailed }
         XCTAssertNotEqual(engine.state, .playing)
+        XCTAssertEqual(engine.currentTrackID, 3)
+        XCTAssertTrue(engine.failureDescription.contains("probing container"))
+        engine.stop()
+        eventually("stopping clears the latched failure") { engine.state == .idle }
+        XCTAssertFalse(engine.hasFailed)
+        XCTAssertEqual(engine.failureDescription, "")
         engine.close()
     }
 

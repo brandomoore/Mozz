@@ -245,6 +245,18 @@ bool mozz_player_is_waiting_for_audio(const struct MozzPlayer *player);
 bool mozz_player_has_failed(const struct MozzPlayer *player);
 
 /**
+ * Copy the last decoder diagnostic as UTF-8, without a terminator.
+ * Returns the full byte count; at most `capacity` bytes are written.
+ *
+ * # Safety
+ * `player` must be a live handle or null. A non-null `buffer` must be writable
+ * for `capacity` bytes. A null buffer can be used to query the required size.
+ */
+uintptr_t mozz_player_failure_message(const struct MozzPlayer *player,
+                                      uint8_t *buffer,
+                                      uintptr_t capacity);
+
+/**
  * Set the ten-band equaliser. `gains_db` must point to ten doubles.
  *
  * # Safety

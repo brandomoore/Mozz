@@ -171,6 +171,9 @@ public final class PlaybackEngine {
     @ObservationIgnored
     public var onReport: (@Sendable (PlaybackReport) -> Void)?
 
+    @ObservationIgnored
+    public var onDiagnostic: (@Sendable (String) -> Void)?
+
     /// Cross-device continuity hook (ADR-0010). Fires on track changes, seeks,
     /// transport changes, queue mutations, and periodically while playing.
     ///
@@ -245,7 +248,7 @@ public final class PlaybackEngine {
     /// downloaded) must stop and say so rather than churn silently through
     /// thousands of tracks, each with its own failing network request.
     private static let maxConsecutiveLoadFailures = 8
-    /// Reset by any successful load.
+    /// Reset only when samples reach the output, not when a URL resolves.
     private var consecutiveLoadFailures = 0
 
     /// Audio-engine geometry, used to construct the engine. The old
@@ -290,6 +293,7 @@ public final class PlaybackEngine {
         let key: UInt64
         let track: Track
         let url: URL
+        let headers: [String: String]
         let isLocal: Bool
         let sessionID: String?
         /// Absolute seconds into the track at which this item's playhead 0 sits.
@@ -679,6 +683,9 @@ public final class PlaybackEngine {
            audio.state == .playing,
            !audio.isWaitingForAudio {
             endAwaitingAudio()
+            consecutiveLoadFailures = 0
+            lastFailure = nil
+            onDiagnostic?("audio confirmed: key=\(key)")
             publish(status: .playing)
             report(.playing)
             return
@@ -870,6 +877,7 @@ public final class PlaybackEngine {
             return
         }
         currentTrack = track
+        onDiagnostic?("load: generation=\(generation) autoplay=\(autoplay)")
         // A paused load — the session restored at launch, a skip while paused —
         // says paused from the start. It used to say `.buffering` until it had
         // resolved, which the player draws as a spinner and which everything
@@ -904,8 +912,6 @@ public final class PlaybackEngine {
                 self.loaded = [loadedItem]
                 self.startEngine(with: loadedItem, autoplay: autoplay,
                                  seekTo: (seek ?? 0) > 0 ? seek : nil)
-                self.consecutiveLoadFailures = 0
-                self.lastFailure = nil
                 if autoplay {
                     self.beginAwaitingAudio(key: loadedItem.key)
                 } else {
@@ -931,8 +937,9 @@ public final class PlaybackEngine {
     private func startEngine(with item: LoadedItem, autoplay: Bool, seekTo: TimeInterval?) {
         isRecovering = false
         prerolledKey = nil
-        guard let audio, let stream = makeStream(url: item.url, isLocal: item.isLocal) else { return }
+        guard let audio, let stream = makeStream(url: item.url, isLocal: item.isLocal, headers: item.headers) else { return }
         let ext = item.url.pathExtension.isEmpty ? nil : item.url.pathExtension
+        onDiagnostic?("engine start: key=\(item.key) local=\(item.isLocal)")
         audio.playNow(stream: stream, trackID: item.key,
                       gainDB: item.track.normalizationGainDB, fileExtension: ext)
         if let seekTo, seekTo > 0 { audio.seek(to: seekTo) }
@@ -941,11 +948,13 @@ public final class PlaybackEngine {
 
     /// Build an engine stream for a resolved URL, or `nil` when one can't be made
     /// (a local file that can't be opened). Remote URLs always build a stream.
-    private func makeStream(url: URL, isLocal: Bool) -> AudioEngine.Stream? {
+    private func makeStream(url: URL, isLocal: Bool, headers: [String: String]) -> AudioEngine.Stream? {
         if isLocal {
             return FileStream(url: url)
         }
-        return HTTPStream(request: URLRequest(url: url))
+        var request = URLRequest(url: url)
+        request.allHTTPHeaderFields = headers
+        return HTTPStream(request: request, diagnostics: onDiagnostic)
     }
 
     // MARK: Item construction & network-drop recovery
@@ -960,6 +969,7 @@ public final class PlaybackEngine {
             key: nextTrackKey,
             track: track,
             url: resolved.url,
+            headers: resolved.headers,
             isLocal: resolved.isLocal,
             sessionID: resolved.sessionID,
             // The offset only "took" if this is a server-seek transcode; otherwise
@@ -992,6 +1002,8 @@ public final class PlaybackEngine {
     /// shells can't drift on which failures are worth retrying.
     private func handleEngineFailure() {
         guard recoveryTask == nil else { return }   // a retry is already scheduled
+        NSLog("Mozz playback failure: %@", audio?.failureDescription ?? "unknown")
+        onDiagnostic?("decoder failure: \(audio?.failureDescription ?? "unknown")")
         // Whether to come back playing is read HERE, before anything below
         // touches the status. Recovery used to publish `.buffering` first and
         // then let `reloadCurrent` infer "was playing" from the status — which
@@ -1032,11 +1044,23 @@ public final class PlaybackEngine {
     /// didn't choose). Bounded by `maxConsecutiveLoadFailures`, so a queue where
     /// nothing is playable reports the failure instead of grinding through it.
     private func handleLoadFailure(track: Track, error: Error, autoplay: Bool) {
+        let diagnosticError = error as NSError
+        onDiagnostic?("load failure: domain=\(diagnosticError.domain) code=\(diagnosticError.code)")
+        handlePlaybackFailure(track: track, reason: PlaybackFailure.Reason(error), autoplay: autoplay)
+    }
+
+    private func handlePlaybackFailure(track: Track, reason: PlaybackFailure.Reason, autoplay: Bool) {
         // Whatever happens next — a skip reloads and waits afresh, a stop says
         // paused — this track is no longer going to be heard.
         endAwaitingAudio()
+        loadGeneration += 1
+        loadTask?.cancel()
+        cancelRecovery()
+        audio?.stop()
+        loaded.removeAll()
+        prerolledKey = nil
         consecutiveLoadFailures += 1
-        let reason = PlaybackFailure.Reason(error)
+        onDiagnostic?("playback failure: consecutive=\(consecutiveLoadFailures) autoplay=\(autoplay)")
         // Only skip while playback was actually meant to be running. A paused
         // session restore that fails should just stay put.
         guard autoplay,
@@ -1050,7 +1074,8 @@ public final class PlaybackEngine {
             return
         }
         lastFailure = PlaybackFailure(track: track, reason: reason, skippedTracks: 0)
-        logTerminal(.skipped, position: 0)
+        logTerminal(.skipped, position: snapshot.elapsed)
+        pendingTransportDirection = .forward
         guard queue.advance() != nil else {
             publish(status: .paused)
             return
@@ -1059,17 +1084,11 @@ public final class PlaybackEngine {
         maybeExtendQueue()
     }
 
-    /// Recovery is exhausted (or the error isn't a transient network blip): treat
-    /// the track as un-completable and advance, so playback doesn't dead-end.
-    /// `play` is whether playback was running when the track failed: a paused
-    /// queue steps over the dead track and stays paused.
+    /// Decoder failures share the load-failure budget; resolving a valid URL
+    /// does not mean the server returned playable audio.
     private func advanceAfterUnrecoverableFailure(play: Bool = true) {
-        cancelRecovery()
-        logTerminal(.skipped, position: snapshot.elapsed)
-        pendingTransportDirection = .forward
-        guard queue.advance() != nil else { stop(); return }
-        reload(autoplay: play)
-        maybeExtendQueue()
+        guard let track = currentTrack else { return }
+        handlePlaybackFailure(track: track, reason: .other("This audio couldn't be played."), autoplay: play)
     }
 
     private enum ReloadReason { case seek, recovery }
@@ -1305,8 +1324,9 @@ public final class PlaybackEngine {
     /// timer while a track is loaded. It does NOT decide when to queue the next
     /// track; that happens eagerly in ``queueNext()`` the moment the next is known.
     private func pollEngineProgress() {
-        guard let audio, currentTrack != nil else { return }
+        guard let audio, !loaded.isEmpty, currentTrack != nil else { return }
         if audio.hasFailed {
+            guard audio.currentTrackID == loaded.first?.key else { return }
             if !isRecovering { handleEngineFailure() }
             return
         }
@@ -1351,7 +1371,7 @@ public final class PlaybackEngine {
         guard prerolledKey == nil, loaded.count >= 2, let audio else { return }
         let next = loaded[1]
         guard next.track.id == queue.peekNext?.id else { return }
-        guard let stream = makeStream(url: next.url, isLocal: next.isLocal) else { return }
+        guard let stream = makeStream(url: next.url, isLocal: next.isLocal, headers: next.headers) else { return }
         let ext = next.url.pathExtension.isEmpty ? nil : next.url.pathExtension
         audio.playNext(stream: stream, trackID: next.key,
                        gainDB: next.track.normalizationGainDB, fileExtension: ext)

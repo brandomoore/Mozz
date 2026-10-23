@@ -464,6 +464,30 @@ pub unsafe extern "C" fn mozz_player_has_failed(player: *const MozzPlayer) -> bo
         .unwrap_or(false)
 }
 
+/// Copy the last decoder diagnostic as UTF-8, without a terminator.
+/// Returns the full byte count; at most `capacity` bytes are written.
+///
+/// # Safety
+/// `player` must be a live handle or null. A non-null `buffer` must be writable
+/// for `capacity` bytes. A null buffer can be used to query the required size.
+#[no_mangle]
+pub unsafe extern "C" fn mozz_player_failure_message(
+    player: *const MozzPlayer,
+    buffer: *mut u8,
+    capacity: usize,
+) -> usize {
+    let Some(player) = (unsafe { player.as_ref() }) else {
+        return 0;
+    };
+    let message = player.inner.failure_message();
+    if !buffer.is_null() {
+        unsafe {
+            std::ptr::copy_nonoverlapping(message.as_ptr(), buffer, capacity.min(message.len()));
+        }
+    }
+    message.len()
+}
+
 /// Set the ten-band equaliser. `gains_db` must point to ten doubles.
 ///
 /// # Safety

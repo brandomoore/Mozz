@@ -154,7 +154,9 @@ public actor PlaybackCommandService {
             }
             return stream
         }
-        return HTTPStream(request: URLRequest(url: resolved.url))
+        var request = URLRequest(url: resolved.url)
+        request.allHTTPHeaderFields = resolved.headers
+        return HTTPStream(request: request)
     }
 
     // MARK: Transport

@@ -1,10 +1,21 @@
 # Changelog
 
-Notable changes, newest first. Dates are the release date; versions are CalVer
-(`YYYY.M.D`).
+Notable changes, newest first. Current releases use semantic versioning;
+older releases retain their original CalVer (`YYYY.M.D`) versions.
 
 Downloads are on the [Releases page](https://github.com/thatcube/Mozz/releases);
 installation is in [`docs/INSTALL.md`](docs/INSTALL.md).
+
+## 0.1.1
+
+- Restore Jellyfin playback on servers that require an authentication header,
+  including range requests and seeks, across all clients.
+- Recover missing Jellyfin album covers from server-exposed track artwork and
+  honor inherited image references. Existing libraries are repaired without
+  replacing downloaded tracks.
+- Stop iPhone and iPad playback after eight consecutive failed tracks instead
+  of repeatedly skipping through the queue. Bounded local diagnostics record
+  playback errors without server URLs or authentication tokens.
 
 ## 2026.9.21
 

@@ -400,10 +400,8 @@ public sealed class MozzServer(MozzCore core, ISecretStore secrets, string? acco
     /// <summary>
     /// Resolve a track to the URL and auth headers its bytes are fetched from,
     /// for the download service. This is the same <c>streamURL</c> command the
-    /// player resolves through — so a download carries exactly the credentials a
-    /// stream does — but it keeps the <c>headers</c> the playback
-    /// <see cref="StreamSource"/> record throws away. Null when the core has no
-    /// URL for the track.
+    /// player resolves through, so downloads and playback carry the same
+    /// authentication headers. Null when the core has no URL for the track.
     /// </summary>
     public async Task<Downloads.DownloadSource?> ResolveAsync(
         string serverId, string remoteId, CancellationToken token = default)
@@ -1152,7 +1150,8 @@ public sealed class SyncCounterPacer
 public sealed record StreamSource(
     [property: JsonPropertyName("url")] string Url,
     [property: JsonPropertyName("isTranscoded")] bool IsTranscoded,
-    [property: JsonPropertyName("sessionID")] string? SessionId);
+    [property: JsonPropertyName("sessionID")] string? SessionId,
+    [property: JsonPropertyName("headers")] Dictionary<string, string>? Headers = null);
 
 internal sealed record DownloadStreamPayload(
     [property: JsonPropertyName("url")] string? Url,

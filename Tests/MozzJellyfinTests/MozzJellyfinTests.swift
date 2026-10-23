@@ -200,12 +200,14 @@ final class JellyfinURLTests: XCTestCase {
         XCTAssertTrue(string.contains("PlaySessionId="))
         XCTAssertFalse(source.isTranscoded)
         XCTAssertNotNil(source.sessionID)
+        XCTAssertTrue(source.headers["Authorization"]?.contains("Token=\"jf-token\"") == true)
     }
 
     func testStreamURLTranscodeWhenBitrateCapped() async throws {
         let source = try await makeBackend().streamSource(for: track, options: StreamOptions(maxBitrateKbps: 192))
         let string = source.url.absoluteString
         XCTAssertTrue(source.isTranscoded)
+        XCTAssertTrue(source.headers["Authorization"]?.contains("Token=\"jf-token\"") == true)
         XCTAssertTrue(string.contains("MaxStreamingBitrate=192000"))
         // Progressive (HTTP) transcode so the stream exposes an AVAssetTrack
         // (required for the EQ / ReplayGain audio-processing tap). HLS wouldn't.
@@ -240,6 +242,7 @@ final class JellyfinURLTests: XCTestCase {
         let transcode = StreamingTrackURLResolver(backend: backend, options: StreamOptions(maxBitrateKbps: 192))
         let seeked = try await transcode.resolve(track, startSeconds: 15)
         XCTAssertTrue(seeked.requiresServerSeek)
+        XCTAssertTrue(seeked.headers["Authorization"]?.contains("Token=\"jf-token\"") == true)
         XCTAssertTrue(seeked.url.absoluteString.contains("StartTimeTicks=150000000"))
         // Direct play is range-seekable → native seek, never flagged.
         let direct = try await StreamingTrackURLResolver(backend: backend).resolve(track, startSeconds: 15)

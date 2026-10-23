@@ -55,6 +55,7 @@ class MozzPlaybackService : MediaLibraryService() {
         val equalizer = MozzAudioProcessor()
         app.equalizer = equalizer
         val player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(AuthenticatedMediaSourceFactory(this))
             .setRenderersFactory(
                 object : DefaultRenderersFactory(this) {
                     override fun buildAudioSink(
@@ -266,10 +267,10 @@ class MozzPlaybackService : MediaLibraryService() {
         .build()
 
     private suspend fun playable(track: Track): MediaItem? {
-        val url = runCatching {
-            app.server.stream(track.serverId, track.remoteId).url
+        val source = runCatching {
+            app.server.stream(track.serverId, track.remoteId)
         }.getOrNull() ?: return null
-        return playableStub(track).buildUpon().setUri(url).build()
+        return playableStub(track).buildUpon().setStreamRequest(source.url, source.headers).build()
     }
 
     private companion object {

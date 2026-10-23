@@ -123,6 +123,15 @@ request failure. Never share passwords, access tokens, or image URLs containing
   full-screen mode for just the words. Mozz uses your server's lyrics first and falls
   back to [LRCLIB](https://lrclib.net) when there are none.
 
+Jellyfin audio requests carry the server's authentication header, including
+range requests and seeks. A catalog or cover loading successfully does not
+necessarily mean the audio endpoint accepts URL-token authentication.
+
+On iPhone and iPad, repeated playback failures stop after eight unsuccessful
+tracks rather than scanning the whole queue. `Documents/playback-diagnostics.log`
+records HTTP status codes and decoder failures, capped at 256 KiB. It excludes
+song titles, server URLs, and authentication tokens.
+
 ### Take it offline
 
 - **Download for the road.** Save albums, playlists, or tracks to the device and play

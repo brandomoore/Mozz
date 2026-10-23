@@ -40,14 +40,16 @@ public struct StreamOptions: Sendable, Hashable {
 /// A resolved, playable URL for a track plus how it will be delivered.
 public struct StreamSource: Sendable, Hashable {
     public var url: URL
+    public var headers: [String: String]
     /// Whether the server will transcode (vs direct play of the original).
     public var isTranscoded: Bool
     /// The session id sent to the server, needed to report progress/stop for
     /// the same session. `nil` for backends that don't use one.
     public var sessionID: String?
 
-    public init(url: URL, isTranscoded: Bool, sessionID: String? = nil) {
+    public init(url: URL, isTranscoded: Bool, sessionID: String? = nil, headers: [String: String] = [:]) {
         self.url = url
+        self.headers = headers
         self.isTranscoded = isTranscoded
         self.sessionID = sessionID
     }

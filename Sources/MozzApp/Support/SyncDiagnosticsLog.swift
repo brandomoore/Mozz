@@ -12,12 +12,14 @@ import os
 /// iOS, so a pulled file is the reliable path for headless debugging.)
 public struct SyncDiagnosticsLog: Sendable {
     private let fileURL: URL
+    private let maximumBytes: UInt64?
 
-    public init() {
+    public init(fileName: String = "sync-diagnostics.log", maximumBytes: UInt64? = nil) {
         let docs = (try? FileManager.default.url(
             for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true
         )) ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        self.fileURL = docs.appendingPathComponent("sync-diagnostics.log")
+        self.fileURL = docs.appendingPathComponent(fileName)
+        self.maximumBytes = maximumBytes
     }
 
     private static let stamp: DateFormatter = {
@@ -44,8 +46,17 @@ public struct SyncDiagnosticsLog: Sendable {
         guard let data = entry.data(using: .utf8) else { return }
         if let handle = try? FileHandle(forWritingTo: fileURL) {
             defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
+            do {
+                let end = try handle.seekToEnd()
+                if let maximumBytes, end + UInt64(data.count) > maximumBytes {
+                    try handle.truncate(atOffset: 0)
+                    try handle.seek(toOffset: 0)
+                }
+                try handle.write(contentsOf: data)
+            } catch {
+                Logger(subsystem: "com.thatcube.Mozz", category: "diagnostics")
+                    .error("Could not append diagnostics (code \((error as NSError).code))")
+            }
         } else {
             try? data.write(to: fileURL, options: .atomic)
         }

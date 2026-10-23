@@ -102,12 +102,14 @@ final class HTTPStreamTests: XCTestCase {
         let port: UInt16
         let body: Data
         private let behaviour: Behaviour
+        private let requiredAuthorization: String?
         private let socket: Int32
         private var running = true
 
-        init(body: Data, behaviour: Behaviour) {
+        init(body: Data, behaviour: Behaviour, requiredAuthorization: String? = nil) {
             self.body = body
             self.behaviour = behaviour
+            self.requiredAuthorization = requiredAuthorization
 
             // Built into locals first: Swift will not let a closure capture
             // self until every stored property is assigned, and the socket
@@ -164,6 +166,18 @@ final class HTTPStreamTests: XCTestCase {
                 let text = received > 0
                     ? String(decoding: request[0..<received], as: UTF8.self) : ""
 
+                if let requiredAuthorization,
+                   !text.split(separator: "\r\n").contains(where: {
+                       $0.lowercased().hasPrefix("authorization:")
+                           && $0.split(separator: ":", maxSplits: 1).last?
+                               .trimmingCharacters(in: .whitespaces) == requiredAuthorization
+                   }) {
+                    let denied = header(status: "401 Unauthorized", length: 0, range: nil)
+                    denied.withUnsafeBytes { _ = Darwin.send(client, $0.baseAddress, denied.count, 0) }
+                    Darwin.close(client)
+                    continue
+                }
+
                 let response: Data
                 switch behaviour {
                 case .ignoresRange:
@@ -211,6 +225,33 @@ final class HTTPStreamTests: XCTestCase {
 
     private func payload(_ count: Int) -> Data {
         Data((0..<count).map { UInt8($0 % 251) })
+    }
+
+    func testAuthorizationSurvivesEveryRangeRequestAndSeek() {
+        let body = payload(3_000)
+        let authorization = "MediaBrowser Token=\"test-only\""
+        let server = Server(body: body, behaviour: .ranged, requiredAuthorization: authorization)
+        defer { server.stop() }
+        var scratch = [UInt8](repeating: 0, count: 700)
+
+        let missing = HTTPStream(request: URLRequest(url: server.url))
+        XCTAssertEqual(scratch.withUnsafeMutableBufferPointer {
+            missing.read(into: $0.baseAddress!, count: $0.count)
+        }, -1)
+        missing.close()
+
+        var request = URLRequest(url: server.url)
+        request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        let stream = HTTPStream(request: request, chunkSize: 512)
+        defer { stream.close() }
+        for offset in [0, 512, 1_500, 200] {
+            XCTAssertEqual(stream.seek(offset: Int64(offset), origin: 0), Int64(offset))
+            let count = scratch.withUnsafeMutableBufferPointer {
+                stream.read(into: $0.baseAddress!, count: $0.count)
+            }
+            XCTAssertGreaterThan(count, 0)
+            if count > 0 { XCTAssertEqual(Data(scratch.prefix(count)), body.subdata(in: offset..<(offset + count))) }
+        }
     }
 
     func testItReadsAWholeBodyAcrossSeveralChunks() throws {
