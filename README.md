@@ -80,6 +80,21 @@ for each are in [`clients/android/README.md`](clients/android/README.md) and
   offers them, instead of asking you to copy an address out of a router admin page.
   Plex accounts with several servers get a picker rather than a guess.
 
+**HTTPS is optional for your media server.** Enter an `http://` or `https://`
+address, including its port and any reverse-proxy path. HTTP works for sign-in,
+library browsing, artwork, streaming, and downloads. HTTPS certificates are still
+validated normally. Plain HTTP does not encrypt credentials or music traffic;
+use a trusted network, a VPN, or HTTPS when connecting over the internet.
+
+**Tailscale works with the same server sign-in.** With Tailscale running on the
+device, use your server's Tailscale IP or MagicDNS name, port, and path. Mozz
+recognizes likely Tailscale tunnels and shows connection guidance on mobile and
+desktop. This is a local-interface heuristic, not a guarantee that a peer is
+reachable. Saved sign-ins retain their server address for reconnecting.
+LAN discovery cannot list new tailnet servers; enter those addresses once.
+Mozz does not install or manage Tailscale, scan the tailnet, or switch between
+different LAN and Tailscale addresses automatically.
+
 ### Your library
 
 - **One tidy library.** Artists, albums, songs, playlists, and genres all live in one

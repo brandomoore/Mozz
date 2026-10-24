@@ -28,7 +28,12 @@ public partial class MainWindow : Window
         DataContextChanged += (_, _) => ObserveLyrics();
         // Coming back to the window is the desktop's return to the foreground: connections to the
         // server may have gone stale while it sat idle, so reopen one before a play needs it.
-        Activated += (_, _) => (DataContext as MainViewModel)?.PrewarmActiveServer();
+        Activated += async (_, _) =>
+        {
+            if (DataContext is not MainViewModel model) return;
+            model.PrewarmActiveServer();
+            await model.Connect.RefreshNetworkStatusAsync();
+        };
     }
 
     /// <summary>

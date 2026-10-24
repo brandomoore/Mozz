@@ -274,6 +274,23 @@ public sealed partial class ConnectViewModel : ViewModelBase
     public System.Collections.ObjectModel.ObservableCollection<DiscoveredServer> Discovered { get; } = [];
 
     [ObservableProperty] private bool _isDiscovering;
+    [ObservableProperty] private bool _tailscaleDetected;
+    [ObservableProperty] private string? _networkStatusError;
+
+    public async Task RefreshNetworkStatusAsync()
+    {
+        try
+        {
+            TailscaleDetected = (await _server.NetworkStatusAsync()).Detected;
+            NetworkStatusError = null;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.TraceWarning("VPN interface inspection failed: {0}", ex.Message);
+            TailscaleDetected = false;
+            NetworkStatusError = "Couldn't check VPN interfaces. You can still enter your server address.";
+        }
+    }
 
     public bool HasDiscovered => Discovered.Count > 0;
 
@@ -294,6 +311,7 @@ public sealed partial class ConnectViewModel : ViewModelBase
         try
         {
             IsDiscovering = true;
+            await RefreshNetworkStatusAsync();
             Message = "Looking for servers on your network…";
             Discovered.Clear();
             OnPropertyChanged(nameof(HasDiscovered));

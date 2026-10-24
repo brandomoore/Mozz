@@ -365,7 +365,6 @@
                         <TextBlock Classes="secondary" TextWrapping="Wrap" TextAlignment="Center"
                                    Text="{Binding Connect.KindHint}" />
 
-
                         <!--
                             What is on this network, rather than what you can
                             remember. Plex and Jellyfin both answer a probe;
@@ -376,6 +375,14 @@
                             every host on the subnet, which is fine when someone
                             has asked to find a server and rude on the way past.
                         -->
+                        <StackPanel Spacing="6" IsVisible="{Binding Connect.TailscaleDetected}">
+                            <TextBlock Text="Tailscale appears connected" FontWeight="SemiBold" />
+                            <TextBlock Classes="secondary" TextWrapping="Wrap"
+                                       Text="Enter your server's Tailscale IP or MagicDNS name. Saved servers reconnect at their saved address; LAN search won't find new tailnet servers." />
+                        </StackPanel>
+                        <TextBlock Classes="secondary" TextWrapping="Wrap"
+                                   IsVisible="{Binding Connect.NetworkStatusError, Converter={x:Static ObjectConverters.IsNotNull}}"
+                                   Text="{Binding Connect.NetworkStatusError}" />
                         <StackPanel Spacing="9">
                             <Button Classes="secondary" HorizontalAlignment="Stretch"
                                     HorizontalContentAlignment="Center"
@@ -3053,6 +3060,14 @@
                                             <Border Background="{DynamicResource SurfaceRaised}" CornerRadius="12" Padding="16">
                                                 <StackPanel Spacing="13">
                                                     <TextBlock Text="Add a server" Classes="primary" FontWeight="SemiBold" />
+                                                    <StackPanel Spacing="6" IsVisible="{Binding Connect.TailscaleDetected}">
+                                                        <TextBlock Text="Tailscale appears connected" FontWeight="SemiBold" />
+                                                        <TextBlock Classes="secondary" TextWrapping="Wrap"
+                                                                   Text="Enter your server's Tailscale IP or MagicDNS name. Saved servers reconnect at their saved address; LAN search won't find new tailnet servers." />
+                                                    </StackPanel>
+                                                    <TextBlock Classes="secondary" TextWrapping="Wrap"
+                                                               IsVisible="{Binding Connect.NetworkStatusError, Converter={x:Static ObjectConverters.IsNotNull}}"
+                                                               Text="{Binding Connect.NetworkStatusError}" />
                                                     <!-- The three backends, with their own marks.
                                                          Drawn from Connect.Backends so this markup exists
                                                          once and is used both here and on the first-run

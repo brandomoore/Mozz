@@ -334,6 +334,12 @@ func dispatchServerCommand(
     case "discoverServers":
         return try await discoverServers(request, session)
 
+    case "networkStatus":
+        guard let interfaces = request.networkInterfaces else {
+            return session.failure(request, "networkStatus needs networkInterfaces")
+        }
+        return session.success(request, TailscaleNetwork(interfaces: interfaces))
+
     // MARK: Jellyfin Quick Connect
     //
     // Three steps rather than one blocking call, mirroring the Plex PIN flow

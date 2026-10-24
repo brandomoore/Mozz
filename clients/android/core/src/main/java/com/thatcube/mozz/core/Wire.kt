@@ -38,6 +38,7 @@ data class CoreRequest(
     /** Jellyfin Quick Connect's opaque handle, carried between its three steps. */
     val secret: String? = null,
     val baseURL: String? = null,
+    val networkInterfaces: List<NetworkInterfaceSnapshot>? = null,
     val username: String? = null,
     val password: String? = null,
     val apiKey: String? = null,

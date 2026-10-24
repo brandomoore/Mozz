@@ -71,6 +71,7 @@ struct SessionRequest: Decodable {
     // Server connection / sync / streaming. See `MozzSessionServer.swift`.
     var kind: String?
     var baseURL: String?
+    var networkInterfaces: [NetworkInterfaceSnapshot]?
     var username: String?
     var password: String?
     var apiKey: String?
@@ -2639,7 +2640,7 @@ let mozzSessionCommands = [
     "continuityQueueHash", "continuityLoad", "continuitySave",
     "suppressTrack", "suppressArtist",
     "unsuppressTrack", "unsuppressArtist", "suppressions",
-    "connect", "discoverServers",
+    "connect", "discoverServers", "networkStatus",
     "quickConnectBegin", "quickConnectCheck", "quickConnectComplete",
     "plexPin", "plexPinCheck", "plexPinToken", "plexServers",
     "plexHomeUsers", "plexHomeSwitch", "plexCompleteLogin",

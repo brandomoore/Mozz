@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Self-hosted server addresses are chosen by the listener, not known at build time.
+         HTTPS keeps the platform's default certificate trust evaluation. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

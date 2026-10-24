@@ -32,6 +32,10 @@ class MozzServer(
 
     // MARK: Sign-in
 
+    suspend fun networkStatus(): TailscaleNetwork = core.require(
+        CoreRequest(cmd = "networkStatus", networkInterfaces = networkInterfaces())
+    )
+
     /**
      * Jellyfin and Subsonic sign in with a username and password. Plex does not
      * — see [beginPlexLink].

@@ -22,6 +22,24 @@ final class MozzSessionServerTests: XCTestCase {
 
     // MARK: Discovery
 
+    func testNetworkStatusUsesTheSharedClassifierWithoutSigningIn() throws {
+        let handle = try open(makeLibrary())
+        defer { _ = mozz_session_close(handle) }
+        for (name, expected) in [("utun4", true), ("pdp_ip0", false)] {
+            let response = try call(handle, [
+                "cmd": "networkStatus",
+                "networkInterfaces": [
+                    ["name": name, "isUp": true, "isLoopback": false, "addresses": ["100.100.10.20"]]
+                ]
+            ])
+            XCTAssertEqual(response["ok"] as? Bool, true)
+            XCTAssertEqual((response["payload"] as? [String: Any])?["detected"] as? Bool, expected)
+        }
+        let missing = try call(handle, ["cmd": "networkStatus"])
+        XCTAssertEqual(missing["ok"] as? Bool, false)
+        XCTAssertTrue(mozzSessionCommands.contains("networkStatus"))
+    }
+
     /// Asking which servers are on this network is answerable without one.
     ///
     /// Subsonic has no discovery protocol of its own — there is nothing on the
@@ -187,6 +205,35 @@ final class MozzSessionServerTests: XCTestCase {
     }
 
     // MARK: Stream URLs
+
+    func testSavedTailnetAddressSurvivesReattachAndStreamResolution() async throws {
+        for base in ["http://100.100.10.20:4533/music", "http://nas.example.ts.net:4533/music",
+                     "https://nas.example.ts.net/music", "http://nas:4533/music",
+                     "http://[fd7a:115c:a1e0::1]:4533/music"] {
+            let path = try makeLibrary()
+            let initial = try open(path)
+            let serverId = try attachSubsonic(initial, baseURL: base)
+            _ = mozz_session_close(initial)
+
+            let db = try MusicDatabase.open(at: URL(fileURLWithPath: path))
+            try await SyntheticCatalog(db).generate(
+                serverId: serverId, size: .init(artists: 1, albums: 1, tracks: 1))
+            let handle = try open(path)
+            defer { _ = mozz_session_close(handle) }
+            XCTAssertEqual(try attachSubsonic(handle, baseURL: base), serverId)
+            let tracks = try call(handle, ["cmd": "tracks", "serverId": serverId, "limit": 1])
+            let row = try XCTUnwrap((tracks["payload"] as? [[String: Any]])?.first)
+            let remoteId = try XCTUnwrap(row["remoteId"] as? String)
+            let response = try call(handle, ["cmd": "streamURL", "serverId": serverId, "remoteId": remoteId])
+            let payload = try XCTUnwrap(response["payload"] as? [String: Any])
+            let stream = try XCTUnwrap(URL(string: try XCTUnwrap(payload["url"] as? String)))
+            let original = try XCTUnwrap(URL(string: base))
+            XCTAssertEqual(stream.scheme, original.scheme)
+            XCTAssertEqual(stream.host, original.host)
+            XCTAssertEqual(stream.port, original.port)
+            XCTAssertEqual(stream.path, "/music/rest/stream.view")
+        }
+    }
 
     func testStreamURLResolvesForASyncedTrack() async throws {
         let path = try makeLibrary()

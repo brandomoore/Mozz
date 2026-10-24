@@ -389,6 +389,8 @@ class AppViewModel(
             server.discoverServers(kind.takeIf { it != BackendKind.SUBSONIC })
         }.getOrDefault(emptyList())
 
+    suspend fun tailscaleDetected(): Boolean = server.networkStatus().detected
+
     /** Back out of a credentials form or a Plex link, to the chooser. */
     fun chooseAnotherBackend() {
         val canCancel = when (val current = _state.value) {

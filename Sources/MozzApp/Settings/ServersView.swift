@@ -15,6 +15,8 @@ import MozzCore
 /// device, both tokens stay in the Keychain, and switching back costs nothing.
 struct ServersView: View {
     @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var tailscale = TailscaleGuidanceState()
     @State private var addingServer = false
     /// Held while the confirmation is up, so the alert knows which row it is
     /// about — a row that may well have moved by the time it is answered.
@@ -22,6 +24,7 @@ struct ServersView: View {
 
     var body: some View {
         List {
+            TailscaleGuidance(status: tailscale)
             Section {
                 ForEach(env.servers, id: \.identity) { server in
                     row(server)
@@ -57,6 +60,9 @@ struct ServersView: View {
                 .environmentObject(env)
         }
         .onAppear { env.refreshServers() }
+        .task(id: scenePhase) {
+            if scenePhase == .active { tailscale.refresh() }
+        }
         .alert(
             "Sign out of \(signingOutOf?.serverName ?? "this server")?",
             isPresented: Binding(

@@ -9,7 +9,7 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "0.1.1"
+    MARKETING_VERSION: "0.1.2"
     CURRENT_PROJECT_VERSION: "1"
     # Language mode 5 (toolchain is newer). Candidate B favours pragmatic,
     # high-performance code with opt-in Sendable/actors rather than repo-wide
@@ -109,12 +109,10 @@ targets:
         # the scheduler refuses it at registration.
         BGTaskSchedulerPermittedIdentifiers:
           - com.thatcube.Mozz.sonic-analysis
-        # Plex/Jellyfin servers are frequently self-hosted on the LAN over plain
-        # HTTP; allow arbitrary + local-network loads. (A production build could
-        # tighten this to per-host exceptions once a server is chosen.)
+        # Self-hosted servers may use HTTP at user-selected addresses. Do not add
+        # NSAllowsLocalNetworking: its presence overrides this allowance on iOS 10+.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-          NSAllowsLocalNetworking: true
         # iOS 14+ requires a purpose string before touching the local network
         # (LAN server discovery / direct-play from a home server).
         NSLocalNetworkUsageDescription: "Mozz connects to Plex and Jellyfin media servers on your local network, and finds your other Mozz devices when you pair them."

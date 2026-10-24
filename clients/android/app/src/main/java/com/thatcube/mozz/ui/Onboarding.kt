@@ -2,12 +2,16 @@ package com.thatcube.mozz.ui
 
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import kotlinx.coroutines.CancellationException
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
@@ -26,6 +30,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -34,12 +39,14 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -83,57 +90,64 @@ import com.thatcube.mozz.ui.theme.quietBody
 private fun OnboardingScaffold(
     title: String,
     subtitle: String? = null,
+    scrollable: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .safeDrawingPadding()
-                .padding(horizontal = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Spacer(Modifier.height(64.dp))
-            Image(
-                painter = painterResource(R.drawable.mozz_logo),
-                contentDescription = null,
-                modifier = Modifier.size(72.dp),
-            )
-            Spacer(Modifier.height(14.dp))
-            Text("Mozz", style = MaterialTheme.typography.displaySmall)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "One app for your music, wherever it lives.",
-                style = quietBody,
-            )
-
-            Spacer(Modifier.weight(0.45f))
-
+        BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
+            val viewportHeight = maxHeight
             Column(
-                modifier = Modifier.widthIn(max = 420.dp).fillMaxWidth(),
+                modifier = (if (scrollable) {
+                    Modifier.fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .heightIn(min = viewportHeight)
+                } else {
+                    Modifier.fillMaxSize()
+                }).padding(horizontal = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.headlineMedium,
-                    textAlign = TextAlign.Center,
+                Spacer(Modifier.height(64.dp))
+                Image(
+                    painter = painterResource(R.drawable.mozz_logo),
+                    contentDescription = null,
+                    modifier = Modifier.size(72.dp),
                 )
-                if (subtitle != null) {
-                    Spacer(Modifier.height(10.dp))
-                    Text(subtitle, style = quietBody)
+                Spacer(Modifier.height(14.dp))
+                Text("Mozz", style = MaterialTheme.typography.displaySmall)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "One app for your music, wherever it lives.",
+                    style = quietBody,
+                )
+
+                Spacer(Modifier.weight(0.45f))
+
+                Column(
+                    modifier = Modifier.widthIn(max = 420.dp).fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.headlineMedium,
+                        textAlign = TextAlign.Center,
+                    )
+                    if (subtitle != null) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(subtitle, style = quietBody)
+                    }
+                    Spacer(Modifier.height(28.dp))
+                    content()
                 }
-                Spacer(Modifier.height(28.dp))
-                content()
+
+                Spacer(Modifier.weight(1f))
+
+                Text(
+                    "Free forever. Open source, GPL-3.0.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(24.dp))
             }
-
-            Spacer(Modifier.weight(1f))
-
-            Text(
-                "Free forever. Open source, GPL-3.0.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(24.dp))
         }
     }
 }
@@ -297,6 +311,7 @@ fun CredentialsScreen(
     onCancel: (() -> Unit)? = null,
     /** Ask the network what is on it. Null where nothing wired discovery. */
     onDiscover: (suspend () -> List<DiscoveredServer>)? = null,
+    onNetworkStatus: (suspend () -> Boolean)? = null,
     /** Start Jellyfin's Quick Connect against the address typed so far. */
     onQuickConnect: ((String) -> Unit)? = null,
 ) {
@@ -307,8 +322,41 @@ fun CredentialsScreen(
     var discovering by remember { mutableStateOf(false) }
     var found by remember(kind) { mutableStateOf<List<DiscoveredServer>?>(null) }
     val scope = rememberCoroutineScope()
+    var tailscaleDetected by remember { mutableStateOf(false) }
+    var networkStatusFailed by remember { mutableStateOf(false) }
+    val currentNetworkStatus by rememberUpdatedState(onNetworkStatus)
+    LifecycleResumeEffect(Unit) {
+        val job = scope.launch {
+            try {
+                tailscaleDetected = currentNetworkStatus?.invoke() == true
+                networkStatusFailed = false
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.w("Mozz", "VPN interface inspection failed", error)
+                tailscaleDetected = false
+                networkStatusFailed = true
+            }
+        }
+        onPauseOrDispose { job.cancel() }
+    }
 
-    OnboardingScaffold(title = "Sign in to ${brand.kind.display}", subtitle = brand.hint) {
+    OnboardingScaffold(
+        title = "Sign in to ${brand.kind.display}",
+        subtitle = brand.hint,
+        scrollable = true,
+    ) {
+        if (tailscaleDetected) {
+            Text("Tailscale appears connected", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Enter your server's Tailscale IP or MagicDNS name. Saved servers reconnect at their saved address; LAN search won't find new tailnet servers.",
+                style = quietBody,
+            )
+            Spacer(Modifier.height(12.dp))
+        } else if (networkStatusFailed) {
+            Text("Couldn't check VPN interfaces. You can still enter your server address.", style = quietBody)
+            Spacer(Modifier.height(12.dp))
+        }
         // What is on this network, rather than what you can remember. Plex and
         // Jellyfin both answer a probe; Subsonic has no discovery protocol, so
         // the address box stays for it either way.

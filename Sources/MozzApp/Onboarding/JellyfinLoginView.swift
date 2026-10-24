@@ -7,6 +7,8 @@ import MozzJellyfin
 /// Connect or username/password.
 struct JellyfinLoginView: View {
     @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var tailscale = TailscaleGuidanceState()
 
     /// A server the user picked from the discovered list. Kept separate from the
     /// manual field so discovery is an *offer* (a checked row), never a value
@@ -35,6 +37,7 @@ struct JellyfinLoginView: View {
             .listRowSeparator(.hidden)
 
             networkSection
+            TailscaleGuidance(status: tailscale)
             manualSection
             if baseURL != nil {
                 signInSection
@@ -59,6 +62,9 @@ struct JellyfinLoginView: View {
         .navigationTitle("")
         .inlineNavigationTitle()
         .task { await runDiscovery() }
+        .task(id: scenePhase) {
+            if scenePhase == .active { tailscale.refresh() }
+        }
         .onDisappear { quickConnectTask?.cancel() }
     }
 

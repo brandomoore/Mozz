@@ -8,6 +8,8 @@ import MozzSubsonic
 /// the Subsonic protocol, so this is a plain manual form.
 struct SubsonicLoginView: View {
     @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var tailscale = TailscaleGuidanceState()
 
     private enum Method: String, CaseIterable, Identifiable {
         case password = "Password"
@@ -31,6 +33,8 @@ struct SubsonicLoginView: View {
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 8, trailing: 16))
             .listRowSeparator(.hidden)
+
+            TailscaleGuidance(status: tailscale)
 
             Section {
                 TextField("https://music.example.com", text: $serverURL)
@@ -89,6 +93,9 @@ struct SubsonicLoginView: View {
         // (back button) with no redundant title text.
         .navigationTitle("")
         .inlineNavigationTitle()
+        .task(id: scenePhase) {
+            if scenePhase == .active { tailscale.refresh() }
+        }
     }
 
     // MARK: Derived state

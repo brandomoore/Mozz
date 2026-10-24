@@ -6,6 +6,14 @@ older releases retain their original CalVer (`YYYY.M.D`) versions.
 Downloads are on the [Releases page](https://github.com/thatcube/Mozz/releases);
 installation is in [`docs/INSTALL.md`](docs/INSTALL.md).
 
+## 0.1.2
+
+- Allow plain HTTP media-server connections on iPhone, iPad, and Android,
+  including custom hostnames and reverse-proxy paths. HTTPS remains supported
+  with normal certificate validation.
+- Recognize likely Tailscale connections on mobile and desktop and explain how
+  to connect using a Tailscale IP or MagicDNS name.
+
 ## 0.1.1
 
 - Restore Jellyfin playback on servers that require an authentication header,

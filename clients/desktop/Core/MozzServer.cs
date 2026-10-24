@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Net.NetworkInformation;
 
 namespace Mozz.Desktop.Core;
 
@@ -23,6 +24,23 @@ public sealed class MozzServer(MozzCore core, ISecretStore secrets, string? acco
     private readonly string _accountsPath = accountsPath ?? Path.Combine(AppPaths.SupportDirectory, AccountsKey);
 
     // MARK: Sign-in
+
+    public async Task<TailscaleNetwork> NetworkStatusAsync(CancellationToken token = default)
+    {
+        var interfaces = await Task.Run(() =>
+            NetworkInterface.GetAllNetworkInterfaces().Select(network => new NetworkInterfaceSnapshot(
+                $"{network.Name} {network.Description}",
+                network.OperationalStatus == OperationalStatus.Up,
+                network.NetworkInterfaceType == NetworkInterfaceType.Loopback,
+                network.GetIPProperties().UnicastAddresses.Select(address => address.Address.ToString()).ToArray()
+            )).ToArray(), token).ConfigureAwait(false);
+        return await core.CallAsync<TailscaleNetwork>(new
+        {
+            cmd = "networkStatus",
+            networkInterfaces = interfaces,
+        }, token).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("networkStatus returned no payload");
+    }
 
     /// <summary>
     /// Jellyfin and Subsonic sign in with a username and password. Plex does not
@@ -1146,6 +1164,15 @@ public sealed class SyncCounterPacer
         return _position < _target;
     }
 }
+
+public sealed record NetworkInterfaceSnapshot(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("isUp")] bool IsUp,
+    [property: JsonPropertyName("isLoopback")] bool IsLoopback,
+    [property: JsonPropertyName("addresses")] string[] Addresses);
+
+public sealed record TailscaleNetwork(
+    [property: JsonPropertyName("detected")] bool Detected);
 
 public sealed record StreamSource(
     [property: JsonPropertyName("url")] string Url,
