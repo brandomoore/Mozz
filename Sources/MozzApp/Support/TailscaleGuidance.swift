@@ -9,10 +9,19 @@ struct TailscaleGuidance: View {
     var body: some View {
         if status.detected {
             Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Tailscale appears connected").font(.headline)
-                    Text("Enter your server's Tailscale IP or MagicDNS name. Saved servers reconnect at their saved address; LAN search won't find new tailnet servers.")
-                        .font(.footnote).foregroundStyle(.secondary)
+                HStack(alignment: .top, spacing: 12) {
+                    Image("TailscaleLogo", bundle: .module)
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 32, height: 32)
+                        .foregroundStyle(.primary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Connected to Tailscale").font(.headline)
+                        Text("Enter your server's Tailscale IP or MagicDNS name.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
             }
         } else if status.failed {

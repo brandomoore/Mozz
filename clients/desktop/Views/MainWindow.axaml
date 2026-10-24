@@ -375,11 +375,16 @@
                             every host on the subnet, which is fine when someone
                             has asked to find a server and rude on the way past.
                         -->
-                        <StackPanel Spacing="6" IsVisible="{Binding Connect.TailscaleDetected}">
-                            <TextBlock Text="Tailscale appears connected" FontWeight="SemiBold" />
-                            <TextBlock Classes="secondary" TextWrapping="Wrap"
-                                       Text="Enter your server's Tailscale IP or MagicDNS name. Saved servers reconnect at their saved address; LAN search won't find new tailnet servers." />
-                        </StackPanel>
+                        <Grid ColumnDefinitions="32,*" IsVisible="{Binding Connect.TailscaleDetected}">
+                            <controls:TablerIcon Size="32" Filled="True" VerticalAlignment="Top"
+                                                Data="{StaticResource IconBrandTailscale}"
+                                                Brush="{Binding $parent[Window].Foreground}" />
+                            <StackPanel Grid.Column="1" Margin="12,0,0,0" Spacing="4">
+                                <TextBlock Text="Connected to Tailscale" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                <TextBlock Classes="secondary" TextWrapping="Wrap"
+                                           Text="Enter your server's Tailscale IP or MagicDNS name." />
+                            </StackPanel>
+                        </Grid>
                         <TextBlock Classes="secondary" TextWrapping="Wrap"
                                    IsVisible="{Binding Connect.NetworkStatusError, Converter={x:Static ObjectConverters.IsNotNull}}"
                                    Text="{Binding Connect.NetworkStatusError}" />
@@ -3060,11 +3065,16 @@
                                             <Border Background="{DynamicResource SurfaceRaised}" CornerRadius="12" Padding="16">
                                                 <StackPanel Spacing="13">
                                                     <TextBlock Text="Add a server" Classes="primary" FontWeight="SemiBold" />
-                                                    <StackPanel Spacing="6" IsVisible="{Binding Connect.TailscaleDetected}">
-                                                        <TextBlock Text="Tailscale appears connected" FontWeight="SemiBold" />
-                                                        <TextBlock Classes="secondary" TextWrapping="Wrap"
-                                                                   Text="Enter your server's Tailscale IP or MagicDNS name. Saved servers reconnect at their saved address; LAN search won't find new tailnet servers." />
-                                                    </StackPanel>
+                                                    <Grid ColumnDefinitions="32,*" IsVisible="{Binding Connect.TailscaleDetected}">
+                                                        <controls:TablerIcon Size="32" Filled="True" VerticalAlignment="Top"
+                                                                            Data="{StaticResource IconBrandTailscale}"
+                                                                            Brush="{Binding $parent[Window].Foreground}" />
+                                                        <StackPanel Grid.Column="1" Margin="12,0,0,0" Spacing="4">
+                                                            <TextBlock Text="Connected to Tailscale" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                            <TextBlock Classes="secondary" TextWrapping="Wrap"
+                                                                       Text="Enter your server's Tailscale IP or MagicDNS name." />
+                                                        </StackPanel>
+                                                    </Grid>
                                                     <TextBlock Classes="secondary" TextWrapping="Wrap"
                                                                IsVisible="{Binding Connect.NetworkStatusError, Converter={x:Static ObjectConverters.IsNotNull}}"
                                                                Text="{Binding Connect.NetworkStatusError}" />

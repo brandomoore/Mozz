@@ -11,8 +11,8 @@ installation is in [`docs/INSTALL.md`](docs/INSTALL.md).
 - Allow plain HTTP media-server connections on iPhone, iPad, and Android,
   including custom hostnames and reverse-proxy paths. HTTPS remains supported
   with normal certificate validation.
-- Recognize likely Tailscale connections on mobile and desktop and explain how
-  to connect using a Tailscale IP or MagicDNS name.
+- Recognize likely Tailscale connections on mobile and desktop, with a compact
+  connection hint and Tailscale logo.
 
 ## 0.1.1
 

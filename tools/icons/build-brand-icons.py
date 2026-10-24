@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Turn the backend brand marks into Android and desktop assets.
+"""Turn the backend and network brand marks into assets for every client.
 
-`tools/icons/brand-svg/` is the single source for the three backends Mozz can
-talk to, exactly as `tabler-svg/` is for the interface icons. iOS reads those
-SVGs directly out of `Brands.xcassets`; Android and Avalonia cannot, so this
-transcribes them:
+`tools/icons/brand-svg/` supplies Android and desktop, exactly as `tabler-svg/`
+does for the interface icons. Tailscale's SVG is also copied to iOS; the
+existing iOS backend marks retain their original artwork in `Brands.xcassets`.
 
   * `clients/android/app/src/main/res/drawable/brand_*.xml` — VectorDrawables,
     drawn with a solid fill so Compose can tint them like any other icon.
@@ -21,14 +20,16 @@ Usage: tools/icons/build-brand-icons.py
 
 from pathlib import Path
 import re
+import shutil
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "tools/icons/brand-svg"
 ANDROID = ROOT / "clients/android/app/src/main/res/drawable"
 DESKTOP = ROOT / "clients/desktop/Assets/BrandIcons.axaml"
+IOS = ROOT / "Sources/MozzApp/Resources/Brands.xcassets"
 
-# Mozz's own names for the three, and the resource names they get. The Subsonic
+# Brand names and the resource names they get. The Subsonic
 # row is drawn with Navidrome's mark because Subsonic is a protocol with no mark
 # of its own and Navidrome is what nearly everyone speaking it is running; the
 # row says "Navidrome (Subsonic)" so the label carries the accuracy.
@@ -36,6 +37,7 @@ BRANDS = [
     ("plex", "Plex"),
     ("jellyfin", "Jellyfin"),
     ("navidrome", "Navidrome"),
+    ("tailscale", "Tailscale"),
 ]
 
 
@@ -74,7 +76,7 @@ def write_desktop(entries: list[tuple[str, str, str, bool]]) -> None:
         "  Do not edit by hand.",
         "",
         "  Separate from Icons.axaml on purpose: those are Tabler's, under Tabler's",
-        "  licence. These are the three backends' own marks, and they are filled",
+        "  licence. These are the products' own marks, and they are filled",
         "  shapes rather than 2pt strokes, so they are drawn differently too.",
         "-->",
         '<ResourceDictionary xmlns="https://github.com/avaloniaui"',
@@ -94,10 +96,12 @@ def main() -> None:
     entries = []
     for name, title in BRANDS:
         data, even_odd = read(name)
+        if name == "tailscale":
+            shutil.copyfile(SOURCE / f"{name}.svg", IOS / f"{title}Logo.imageset/{name}-logo.svg")
         write_android(name, title, data, even_odd)
         entries.append((name, title, data, even_odd))
     write_desktop(entries)
-    print(f"wrote {len(entries)} brand marks to Android and desktop")
+    print(f"wrote {len(entries)} brand marks to iOS, Android and desktop")
 
 
 if __name__ == "__main__":

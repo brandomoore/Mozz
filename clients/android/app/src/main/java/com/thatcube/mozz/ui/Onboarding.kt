@@ -347,11 +347,22 @@ fun CredentialsScreen(
         scrollable = true,
     ) {
         if (tailscaleDetected) {
-            Text("Tailscale appears connected", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "Enter your server's Tailscale IP or MagicDNS name. Saved servers reconnect at their saved address; LAN search won't find new tailnet servers.",
-                style = quietBody,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.brand_tailscale),
+                    contentDescription = null,
+                    modifier = Modifier.size(32.dp),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Connected to Tailscale", style = MaterialTheme.typography.titleSmall)
+                    Text("Enter your server's Tailscale IP or MagicDNS name.", style = quietBody)
+                }
+            }
             Spacer(Modifier.height(12.dp))
         } else if (networkStatusFailed) {
             Text("Couldn't check VPN interfaces. You can still enter your server address.", style = quietBody)
